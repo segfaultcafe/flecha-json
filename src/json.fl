@@ -4,12 +4,24 @@ module json;
     :: lib::std::containers::collections as coll
     :: lib::std::text::strings;
 
-export decoration json {};
+/*
+    Flecha 0.3.x compiler-known decoration. Generated code depends on the
+    exported Writer and Reader protocol, so those public APIs must change only
+    with a coordinated compiler update. The planned v0.4.0 behavior engine
+    moves this implementation out of the compiler while preserving this public
+    declaration and its application syntax.
+*/
+export decoration json;
 
 export error JsonError {
     InvalidState,
     IncompleteDocument,
     NonFiniteNumber,
+    InvalidSyntax,
+    UnexpectedEnd,
+    TypeMismatch,
+    NumberOutOfRange,
+    TrailingData,
 }
 
 enum ContainerKind {
@@ -29,5 +41,20 @@ export structure Writer {
         coll::Array<Frame> frames;
         error failure;
         bool rootWritten;
+    }
+};
+
+export structure Reader {
+    private {
+        []const u8 source;
+        usize position;
+        error failure;
+
+        usize keyStart;
+        usize keyEnd;
+        bool keyEscaped;
+
+        coll::Array<Frame> frames;
+        bool rootRead;
     }
 };

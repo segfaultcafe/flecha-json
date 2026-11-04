@@ -1,0 +1,340 @@
+module json_test;
+
+@imports
+    :: root::json
+    :: lib::std::tests::testing
+    :: lib::std::tests::asserts;
+
+test reads_objects_decoded_keys_and_owned_strings(&testing::UnitTest t) {
+    reader := json::Reader::init(
+        "{\"\\u0076alue\":42,\"name\":\"line\\n\\uD83D\\uDE00\"}"
+            .cast<[]const u8>
+    );
+
+    err := reader.beginObject();
+    more, nextError := reader.nextObjectField();
+    i32 value = none;
+    if nextError == none and more and reader.keyIs("value") {
+        nextError = reader.read(&value);
+    }
+
+    bool secondMatches = false;
+    string name = none;
+    if nextError == none {
+        more, nextError = reader.nextObjectField();
+    }
+    if nextError == none and more {
+        secondMatches = reader.keyIs("name");
+        name, nextError = reader.readString();
+    }
+
+    if nextError == none {
+        more, nextError = reader.nextObjectField();
+    }
+    finishError := reader.finish();
+
+    asserts::is_true(t, err == none, "object parsing begins");
+    asserts::is_true(t, value == 42, "escaped object keys match decoded text");
+    asserts::is_true(t, secondMatches, "plain object keys match");
+    asserts::string_equal(
+        t,
+        name.view(),
+        "line\n😀",
+        "strings decode escapes and surrogate pairs into owned UTF-8"
+    );
+    asserts::is_true(
+        t,
+        !more and nextError == none and finishError == none,
+        "the complete object finishes without trailing input"
+    );
+}
+
+test reads_representative_scalars_from_an_array(&testing::UnitTest t) {
+    reader := json::Reader::init(
+        "[-32,64,-2.25,true,null]".cast<[]const u8>
+    );
+
+    i32 signed32 = none;
+    u64 unsigned64 = none;
+    f64 double = none;
+    bool boolean = false;
+
+    err := reader.beginArray();
+    bool more = false;
+    if err == none { more, err = reader.nextArrayElement(); }
+    if err == none and more { err = reader.read(&signed32); }
+    if err == none { more, err = reader.nextArrayElement(); }
+    if err == none and more { err = reader.read(&unsigned64); }
+    if err == none { more, err = reader.nextArrayElement(); }
+    if err == none and more { err = reader.read(&double); }
+    if err == none { more, err = reader.nextArrayElement(); }
+    if err == none and more { err = reader.read(&boolean); }
+    if err == none { more, err = reader.nextArrayElement(); }
+    if err == none and more { err = reader.readNull(); }
+    if err == none { more, err = reader.nextArrayElement(); }
+
+    finishError := reader.finish();
+    asserts::is_true(t, err == none and !more, "the scalar array is consumed");
+    asserts::is_true(
+        t,
+        signed32 == -32 and unsigned64 == 64 and double == -2.25 and boolean,
+        "signed, unsigned, floating-point, and boolean values decode"
+    );
+    asserts::is_true(t, finishError == none, "the scalar document finishes");
+}
+
+test traverses_nested_containers_and_skips_unknown_values(
+    &testing::UnitTest t
+) {
+    reader := json::Reader::init(
+        "{\"unknown\":[1,{\"nested\":[true,null,{\"x\":\"y\"}]}],\"kept\":7}"
+            .cast<[]const u8>
+    );
+
+    err := reader.beginObject();
+    more, nextError := reader.nextObjectField();
+    if nextError == none and more and reader.keyIs("unknown") {
+        nextError = reader.skipValue();
+    }
+    if nextError == none {
+        more, nextError = reader.nextObjectField();
+    }
+
+    i32 kept = none;
+    if nextError == none and more and reader.keyIs("kept") {
+        nextError = reader.read(&kept);
+    }
+    if nextError == none {
+        more, nextError = reader.nextObjectField();
+    }
+
+    finishError := reader.finish();
+    asserts::is_true(t, err == none, "nested document begins");
+    asserts::is_true(t, kept == 7, "known fields after skipped values decode");
+    asserts::is_true(
+        t,
+        !more and nextError == none and finishError == none,
+        "recursive skipping preserves the surrounding object state"
+    );
+}
+
+test nested_public_traversal_preserves_parent_state(&testing::UnitTest t) {
+    reader := json::Reader::init(
+        "{\"items\":[{\"value\":1},{\"value\":2}]}".cast<[]const u8>
+    );
+
+    err := reader.beginObject();
+    bool more = false;
+    if err == none { more, err = reader.nextObjectField(); }
+    if err == none and more { err = reader.beginArray(); }
+
+    i32 sum = 0;
+    if err == none { more, err = reader.nextArrayElement(); }
+    while err == none and more {
+        err = reader.beginObject();
+        bool hasField = false;
+        if err == none { hasField, err = reader.nextObjectField(); }
+        if err == none and hasField and reader.keyIs("value") {
+            i32 value = none;
+            err = reader.read(&value);
+            sum = sum + value;
+        }
+        if err == none { hasField, err = reader.nextObjectField(); }
+        if err == none and hasField {
+            err = json::JsonError.InvalidState;
+        }
+        if err == none { more, err = reader.nextArrayElement(); }
+    }
+
+    if err == none { more, err = reader.nextObjectField(); }
+    finishError := reader.finish();
+    asserts::is_true(t, sum == 3, "nested objects decode inside arrays");
+    asserts::is_true(
+        t,
+        err == none and !more and finishError == none,
+        "closing nested containers restores their parent frame"
+    );
+}
+
+test reports_number_range_type_and_syntax_errors(&testing::UnitTest t) {
+    overflow := json::Reader::init("256".cast<[]const u8>);
+    u8 narrow = none;
+    overflowError := overflow.read(&narrow);
+
+    floatingInteger := json::Reader::init("1.5".cast<[]const u8>);
+    i32 integer = none;
+    floatingIntegerError := floatingInteger.read(&integer);
+
+    wrongType := json::Reader::init("null".cast<[]const u8>);
+    bool boolean = none;
+    typeError := wrongType.read(&boolean);
+
+    leadingZero := json::Reader::init("01".cast<[]const u8>);
+    i32 invalid = none;
+    syntaxError := leadingZero.read(&invalid);
+
+    asserts::has_error_variant(
+        t,
+        overflowError,
+        json::JsonError.NumberOutOfRange,
+        "integer overflow is distinct from malformed JSON"
+    );
+    asserts::has_error_variant(
+        t,
+        floatingIntegerError,
+        json::JsonError.TypeMismatch,
+        "fractional numbers do not decode into integers"
+    );
+    asserts::has_error_variant(
+        t,
+        typeError,
+        json::JsonError.TypeMismatch,
+        "JSON null does not decode into bool"
+    );
+    asserts::has_error_variant(
+        t,
+        syntaxError,
+        json::JsonError.InvalidSyntax,
+        "leading zeroes are rejected"
+    );
+}
+
+test rejects_invalid_strings_trailing_data_and_incomplete_documents(
+    &testing::UnitTest t
+) {
+    invalidEscape := json::Reader::init("\"\\x\"".cast<[]const u8>);
+    _, escapeError := invalidEscape.readString();
+
+    [3]u8 invalidUtf8Source = [34, 255, 34];
+    invalidUtf8 := json::Reader::init(invalidUtf8Source[:]);
+    _, utf8Error := invalidUtf8.readString();
+
+    trailing := json::Reader::init("true false".cast<[]const u8>);
+    bool value = none;
+    trailingReadError := trailing.read(&value);
+    trailingError := trailing.finish();
+
+    empty := json::Reader::init("".cast<[]const u8>);
+    emptyError := empty.finish();
+
+    asserts::has_error_variant(
+        t,
+        escapeError,
+        json::JsonError.InvalidSyntax,
+        "unknown string escapes are rejected"
+    );
+    asserts::has_error_variant(
+        t,
+        utf8Error,
+        json::JsonError.InvalidSyntax,
+        "invalid raw UTF-8 is rejected"
+    );
+    asserts::is_true(t, trailingReadError == none, "the first root value reads");
+    asserts::has_error_variant(
+        t,
+        trailingError,
+        json::JsonError.TrailingData,
+        "a second root value is trailing data"
+    );
+    asserts::has_error_variant(
+        t,
+        emptyError,
+        json::JsonError.IncompleteDocument,
+        "an empty document has no root value"
+    );
+}
+
+test rejects_invalid_reader_transitions_and_trailing_commas(
+    &testing::UnitTest t
+) {
+    pending := json::Reader::init("{\"value\":1}".cast<[]const u8>);
+    pendingError := pending.beginObject();
+    bool more = false;
+    if pendingError == none { more, pendingError = pending.nextObjectField(); }
+    if pendingError == none and more {
+        more, pendingError = pending.nextObjectField();
+    }
+
+    mismatched := json::Reader::init("{}".cast<[]const u8>);
+    mismatchError := mismatched.beginObject();
+    if mismatchError == none {
+        _, mismatchError = mismatched.nextArrayElement();
+    }
+
+    trailingComma := json::Reader::init("[1,]".cast<[]const u8>);
+    commaError := trailingComma.beginArray();
+    if commaError == none { more, commaError = trailingComma.nextArrayElement(); }
+    i32 value = none;
+    if commaError == none and more { commaError = trailingComma.read(&value); }
+    if commaError == none { more, commaError = trailingComma.nextArrayElement(); }
+
+    asserts::has_error_variant(
+        t,
+        pendingError,
+        json::JsonError.InvalidState,
+        "a field value must be consumed before advancing"
+    );
+    asserts::has_error_variant(
+        t,
+        mismatchError,
+        json::JsonError.InvalidState,
+        "container traversal must match its kind"
+    );
+    asserts::has_error_variant(
+        t,
+        commaError,
+        json::JsonError.InvalidSyntax,
+        "trailing array commas are rejected"
+    );
+}
+
+test deserializes_deeply_nested_decorated_structures(&testing::UnitTest t) {
+    envelope, err := Envelope::fromJson(
+        "{\"ignored\":{\"items\":[1,{\"deep\":true}]},\"request_id\":99,\"user\":{\"profile\":{\"address\":{\"location\":{\"country\":\"BR\",\"city\":\"Sao Paulo\"},\"street\":\"Faria Lima\",\"number\":42},\"display_name\":\"alex\"},\"active\":true}}"
+            .cast<[]const u8>
+    );
+
+    asserts::is_true(t, err == none, "the generated fromJson helper succeeds");
+    asserts::is_true(t, envelope.requestId == 99, "renamed integer fields decode");
+    asserts::is_true(t, envelope.user.active, "nested booleans decode");
+    asserts::string_equal(
+        t,
+        envelope.user.profile.address.location.country.view(),
+        "BR",
+        "deeply nested strings decode"
+    );
+    asserts::string_equal(
+        t,
+        envelope.user.profile.address.street.view(),
+        "Faria Lima",
+        "nested owning strings are assigned"
+    );
+    asserts::string_equal(
+        t,
+        envelope.user.profile.displayName.view(),
+        "alex",
+        "field-level JSON names decode"
+    );
+}
+
+test deserializes_explicit_decorated_fields(&testing::UnitTest t) {
+    document, err := ExplicitDocument::fromJson(
+        "{\"ignored\":true,\"integer_value\":7,\"text_value\":\"ok\",\"nested_value\":{\"country\":\"US\",\"city\":\"New York\"}}"
+            .cast<[]const u8>
+    );
+
+    asserts::is_true(t, err == none, "explicit-mode fromJson succeeds");
+    asserts::is_true(t, document.integerValue == 7, "explicit integer decodes");
+    asserts::string_equal(
+        t,
+        document.textValue.view(),
+        "ok",
+        "explicit string decodes"
+    );
+    asserts::string_equal(
+        t,
+        document.nestedValue.city.view(),
+        "New York",
+        "explicit nested structure decodes"
+    );
+}

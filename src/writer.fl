@@ -1,3 +1,17 @@
+/*
+    Flecha JSON library - streaming JSON serialization.
+
+    This module is part of the compiler-facing @json protocol. Compiler-
+    generated writeJson() and json() methods call Writer::init(), beginObject(),
+    endObject(), key(), the public write() overloads, and finish(). Keep those
+    public names, signatures, ownership contracts, and behavior backward-
+    compatible whenever possible; changing them may require a corresponding
+    Flecha compiler update.
+
+    New public APIs may be added without changing the compiler. Private state,
+    helpers, buffering, escaping, validation, and performance details are
+    library implementation details and may evolve independently.
+*/
 module json;
 
 @imports

@@ -5,39 +5,38 @@ module json_test;
     :: lib::std::tests::testing
     :: lib::std::tests::asserts;
 
-@json(default)
+@json(structure)
 structure Location {
     string country;
     string city;
 };
 
-@json(default)
+@json(structure)
 structure Address {
     Location location;
     string street;
     u32 number;
 };
 
-@json(default)
+@json(structure)
 structure Profile {
     Address address;
     @json("display_name") string displayName;
     private string accessToken;
 };
 
-@json(default)
+@json(structure)
 structure User {
     Profile profile;
     bool active;
 };
 
-@json(default)
+@json(structure)
 structure Envelope {
     @json("request_id") u64 requestId;
     User user;
 };
 
-@json(explicit)
 structure ExplicitDocument {
     @json("integer_value") i32 integerValue;
     @json("text_value") string textValue;
@@ -92,7 +91,7 @@ test serializes_explicit_fields_with_overridden_names(&testing::UnitTest t) {
         t,
         output[:].cast<stringv>,
         "{\"integer_value\":42,\"text_value\":\"explicit\",\"nested_value\":{\"country\":\"BR\",\"city\":\"Sao Paulo\"}}",
-        "@json(explicit) uses every overridden field name"
+        "field-level @json names select every explicit field"
     );
 }
 

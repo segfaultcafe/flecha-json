@@ -1,0 +1,1028 @@
+/*
+    Flecha JSON library - streaming JSON parsing and deserialization.
+
+    This module is part of the compiler-facing @json protocol. Compiler-
+    generated readJson() and fromJson() methods call Reader::init(),
+    beginObject(), nextObjectField(), keyIs(), the public read() overloads,
+    readString(), skipValue(), and finish(). Keep those public names,
+    signatures, ownership contracts, and behavior backward-compatible whenever
+    possible; changing them may require a corresponding Flecha compiler update.
+
+    The remaining traversal APIs are public for handwritten parsers. Private
+    state, helpers, tokenization, validation, and performance details are
+    library implementation details and may evolve independently.
+*/
+module json;
+
+@imports
+    :: lib::std::containers::collections as coll
+    :: lib::std::text::strings
+    :: lib::std::text::utf8
+    :: lib::std::text::errors as text_errors
+    :: lib::std::math::float;
+
+const u8 QUOTE = 34;
+const u8 BACKSLASH = 92;
+const u8 MINUS = 45;
+const u8 PLUS = 43;
+const u8 DECIMAL_POINT = 46;
+const u8 ZERO = 48;
+const u8 NINE = 57;
+const u8 UPPER_E = 69;
+const u8 LOWER_E = 101;
+
+Reader Reader::init([]const u8 source) <-source override {
+    return build Reader {
+        self.source = source;
+        self.position = 0;
+        self.failure = none;
+        self.keyStart = 0;
+        self.keyEnd = 0;
+        self.keyEscaped = false;
+        self.frames = coll::Array<Frame>::init();
+        self.rootRead = false;
+    };
+}
+
+usize Reader::position(&const self) {
+    return self->position;
+}
+
+error Reader::beginObject(&self) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    self->skipWhitespace();
+    if self->position >= self->source.len() {
+        return self->remember(JsonError.UnexpectedEnd);
+    }
+    if self->source[self->position] != 123 {
+        return self->remember(JsonError.TypeMismatch);
+    }
+
+    self->position++;
+    pushError := self->frames.push(build Frame {
+        self.kind = ContainerKind.Object;
+        self.count = 0;
+        self.waitingForValue = false;
+    });
+    return self->remember(pushError);
+}
+
+(bool, error) Reader::nextObjectField(&self) {
+    err := self->requireContainer(ContainerKind.Object);
+    if err != none {
+        return (false, err);
+    }
+
+    frame, frameError := self->frames.last();
+    if frameError != none {
+        return (false, self->remember(frameError));
+    }
+    if frame.waitingForValue {
+        return (false, self->remember(JsonError.InvalidState));
+    }
+
+    self->skipWhitespace();
+    if self->position >= self->source.len() {
+        return (false, self->remember(JsonError.UnexpectedEnd));
+    }
+
+    if self->source[self->position] == 125 {
+        self->position++;
+        _, popError := self->frames.pop();
+        return (false, self->remember(popError));
+    }
+
+    if frame.count > 0 {
+        if self->source[self->position] != 44 {
+            return (false, self->remember(JsonError.InvalidSyntax));
+        }
+
+        self->position++;
+        self->skipWhitespace();
+        if self->position >= self->source.len() {
+            return (false, self->remember(JsonError.UnexpectedEnd));
+        }
+        if self->source[self->position] == 125 {
+            return (false, self->remember(JsonError.InvalidSyntax));
+        }
+    }
+
+    if self->source[self->position] != QUOTE {
+        return (false, self->remember(JsonError.InvalidSyntax));
+    }
+
+    start, end, escaped, scanError := self->scanString();
+    if scanError != none {
+        return (false, self->remember(scanError));
+    }
+
+    self->skipWhitespace();
+    if self->position >= self->source.len() {
+        return (false, self->remember(JsonError.UnexpectedEnd));
+    }
+    if self->source[self->position] != 58 {
+        return (false, self->remember(JsonError.InvalidSyntax));
+    }
+
+    self->position++;
+    self->keyStart = start;
+    self->keyEnd = end;
+    self->keyEscaped = escaped;
+
+    frames := self->frames.viewRef();
+    frames[frames.len() - 1].waitingForValue = true;
+    return (true, none);
+}
+
+bool Reader::keyIs(&const self, stringv expected) {
+    if self->failure != none or self->frames.empty() {
+        return false;
+    }
+
+    frame, frameError := self->frames.last();
+    if frameError != none or frame.kind != ContainerKind.Object or
+        !frame.waitingForValue {
+        return false;
+    }
+
+    if !self->keyEscaped {
+        return strings::stringv_from_bytes(
+            self->source[self->keyStart:self->keyEnd]
+        ) == expected;
+    }
+
+    usize sourceIndex = self->keyStart;
+    usize expectedIndex = 0;
+    const usize EXPECTED_LENGTH = expected.len().cast<usize>;
+    while sourceIndex < self->keyEnd {
+        const u8 BYTE = self->source[sourceIndex];
+        if BYTE != BACKSLASH {
+            if expectedIndex >= EXPECTED_LENGTH or
+                expected[expectedIndex.cast<u32>].cast<u8> != BYTE {
+                return false;
+            }
+
+            sourceIndex++;
+            expectedIndex++;
+        } else {
+            sourceIndex++;
+            const u8 ESCAPE = self->source[sourceIndex];
+            sourceIndex++;
+
+            if ESCAPE == 117 {
+                codePoint, nextIndex, decodeError :=
+                    self->decodeEscapedCodePoint(sourceIndex);
+                if decodeError != none {
+                    return false;
+                }
+                sourceIndex = nextIndex;
+
+                encoded, length, encodingError := utf8::encode(codePoint);
+                if encodingError != none or
+                    expectedIndex + length > EXPECTED_LENGTH {
+                    return false;
+                }
+
+                loop usize i = 0; i < length; i++ {
+                    if expected[(expectedIndex + i).cast<u32>].cast<u8> !=
+                        encoded[i] {
+                        return false;
+                    }
+                }
+                expectedIndex = expectedIndex + length;
+            } else {
+                u8 decoded = ESCAPE;
+                if ESCAPE == 98 {
+                    decoded = 8;
+                }
+                if ESCAPE == 102 {
+                    decoded = 12;
+                }
+                if ESCAPE == 110 {
+                    decoded = 10;
+                }
+                if ESCAPE == 114 {
+                    decoded = 13;
+                }
+                if ESCAPE == 116 {
+                    decoded = 9;
+                }
+
+                if expectedIndex >= EXPECTED_LENGTH or
+                    expected[expectedIndex.cast<u32>].cast<u8> != decoded {
+                    return false;
+                }
+                expectedIndex++;
+            }
+        }
+    }
+
+    return expectedIndex == EXPECTED_LENGTH;
+}
+
+error Reader::beginArray(&self) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    self->skipWhitespace();
+    if self->position >= self->source.len() {
+        return self->remember(JsonError.UnexpectedEnd);
+    }
+    if self->source[self->position] != 91 {
+        return self->remember(JsonError.TypeMismatch);
+    }
+
+    self->position++;
+    pushError := self->frames.push(build Frame {
+        self.kind = ContainerKind.Array;
+        self.count = 0;
+        self.waitingForValue = false;
+    });
+    return self->remember(pushError);
+}
+
+(bool, error) Reader::nextArrayElement(&self) {
+    err := self->requireContainer(ContainerKind.Array);
+    if err != none {
+        return (false, err);
+    }
+
+    frame, frameError := self->frames.last();
+    if frameError != none {
+        return (false, self->remember(frameError));
+    }
+    if frame.waitingForValue {
+        return (false, self->remember(JsonError.InvalidState));
+    }
+
+    self->skipWhitespace();
+    if self->position >= self->source.len() {
+        return (false, self->remember(JsonError.UnexpectedEnd));
+    }
+
+    if self->source[self->position] == 93 {
+        self->position++;
+        _, popError := self->frames.pop();
+        return (false, self->remember(popError));
+    }
+
+    if frame.count > 0 {
+        if self->source[self->position] != 44 {
+            return (false, self->remember(JsonError.InvalidSyntax));
+        }
+
+        self->position++;
+        self->skipWhitespace();
+        if self->position >= self->source.len() {
+            return (false, self->remember(JsonError.UnexpectedEnd));
+        }
+        if self->source[self->position] == 93 {
+            return (false, self->remember(JsonError.InvalidSyntax));
+        }
+    }
+
+    frames := self->frames.viewRef();
+    frames[frames.len() - 1].waitingForValue = true;
+    return (true, none);
+}
+
+error Reader::readNull(&self) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    self->skipWhitespace();
+    if self->position >= self->source.len() {
+        return self->remember(JsonError.UnexpectedEnd);
+    }
+    if self->source[self->position] != 110 {
+        return self->remember(JsonError.TypeMismatch);
+    }
+
+    err = self->consumeLiteral("null");
+    return self->remember(err);
+}
+
+error Reader::read(&self, &bool output) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    self->skipWhitespace();
+    if self->position >= self->source.len() {
+        return self->remember(JsonError.UnexpectedEnd);
+    }
+
+    const u8 FIRST = self->source[self->position];
+    if FIRST == 116 {
+        err = self->consumeLiteral("true");
+        if err == none {
+            *output = true;
+        }
+    } else if FIRST == 102 {
+        err = self->consumeLiteral("false");
+        if err == none {
+            *output = false;
+        }
+    } else {
+        err = JsonError.TypeMismatch;
+    }
+
+    return self->remember(err);
+}
+
+error Reader::read(&self, &i8 output) {
+    return self->readInteger<i8>(output);
+}
+
+error Reader::read(&self, &i16 output) {
+    return self->readInteger<i16>(output);
+}
+
+error Reader::read(&self, &i32 output) {
+    return self->readInteger<i32>(output);
+}
+
+error Reader::read(&self, &i64 output) {
+    return self->readInteger<i64>(output);
+}
+
+error Reader::read(&self, &isize output) {
+    return self->readInteger<isize>(output);
+}
+
+error Reader::read(&self, &u8 output) {
+    return self->readInteger<u8>(output);
+}
+
+error Reader::read(&self, &u16 output) {
+    return self->readInteger<u16>(output);
+}
+
+error Reader::read(&self, &u32 output) {
+    return self->readInteger<u32>(output);
+}
+
+error Reader::read(&self, &u64 output) {
+    return self->readInteger<u64>(output);
+}
+
+error Reader::read(&self, &usize output) {
+    return self->readInteger<usize>(output);
+}
+
+error Reader::read(&self, &f32 output) {
+    return self->readFloat<f32>(output);
+}
+
+error Reader::read(&self, &f64 output) {
+    return self->readFloat<f64>(output);
+}
+
+// Reads one JSON string into independently owned storage.
+(string, error) Reader::readString(&self) {
+    err := self->beforeValue();
+    if err != none {
+        return (none, err);
+    }
+
+    self->skipWhitespace();
+    start, end, escaped, scanError := self->scanString();
+    if scanError != none {
+        return (none, self->remember(scanError));
+    }
+
+    string value = none;
+    if escaped {
+        value, err = self->decodeString(start, end);
+    } else {
+        value, err = strings::string_from_bytes(self->source[start:end]);
+    }
+    if err != none {
+        return (none, self->remember(err));
+    }
+
+    return (value, none);
+}
+
+error Reader::skipValue(&self) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    self->skipWhitespace();
+    err = self->skipRawValue();
+    return self->remember(err);
+}
+
+error Reader::finish(&self) {
+    if self->failure != none {
+        return self->failure;
+    }
+    if !self->rootRead or !self->frames.empty() {
+        return self->remember(JsonError.IncompleteDocument);
+    }
+
+    self->skipWhitespace();
+    if self->position != self->source.len() {
+        return self->remember(JsonError.TrailingData);
+    }
+
+    return none;
+}
+
+private error Reader::beforeValue(&self) {
+    if self->failure != none {
+        return self->failure;
+    }
+
+    if self->frames.empty() {
+        if self->rootRead {
+            return self->remember(JsonError.InvalidState);
+        }
+
+        self->rootRead = true;
+        return none;
+    }
+
+    frame, frameError := self->frames.last();
+    if frameError != none {
+        return self->remember(frameError);
+    }
+    if !frame.waitingForValue {
+        return self->remember(JsonError.InvalidState);
+    }
+
+    frames := self->frames.viewRef();
+    const usize LAST = frames.len() - 1;
+    frames[LAST].waitingForValue = false;
+    frames[LAST].count++;
+    return none;
+}
+
+private error Reader::remember(&self, error err) {
+    if err != none and self->failure == none {
+        self->failure = err;
+    }
+    return self->failure;
+}
+
+private error Reader::requireContainer(&self, ContainerKind expected) {
+    if self->failure != none {
+        return self->failure;
+    }
+    if self->frames.empty() {
+        return self->remember(JsonError.InvalidState);
+    }
+
+    frame, frameError := self->frames.last();
+    if frameError != none {
+        return self->remember(frameError);
+    }
+    if frame.kind != expected {
+        return self->remember(JsonError.InvalidState);
+    }
+    return none;
+}
+
+private void Reader::skipWhitespace(&self) {
+    while self->position < self->source.len() {
+        const u8 BYTE = self->source[self->position];
+        if BYTE != 32 and BYTE != 9 and BYTE != 10 and BYTE != 13 {
+            return;
+        }
+        self->position++;
+    }
+}
+
+private bool Reader::isValueBoundary(&const self, usize position) {
+    if position >= self->source.len() {
+        return true;
+    }
+
+    const u8 BYTE = self->source[position];
+    return BYTE == 32 or BYTE == 9 or BYTE == 10 or BYTE == 13 or
+        BYTE == 44 or BYTE == 93 or BYTE == 125;
+}
+
+private error Reader::consumeLiteral(&self, stringv literal) {
+    const usize LENGTH = literal.len().cast<usize>;
+    const usize REMAINING = self->source.len() - self->position;
+    usize available = LENGTH;
+    if REMAINING < LENGTH {
+        available = REMAINING;
+    }
+
+    loop usize i = 0; i < available; i++ {
+        if self->source[self->position + i] != literal[i.cast<u32>].cast<u8> {
+            return JsonError.InvalidSyntax;
+        }
+    }
+    if available != LENGTH {
+        return JsonError.UnexpectedEnd;
+    }
+
+    const usize END = self->position + LENGTH;
+    if !self->isValueBoundary(END) {
+        return JsonError.InvalidSyntax;
+    }
+
+    self->position = END;
+    return none;
+}
+
+private (usize, usize, bool, error) Reader::scanString(&self) {
+    if self->position >= self->source.len() {
+        return (none, none, false, JsonError.UnexpectedEnd);
+    }
+    if self->source[self->position] != QUOTE {
+        return (none, none, false, JsonError.TypeMismatch);
+    }
+
+    self->position++;
+    const usize START = self->position;
+    bool escaped = false;
+
+    while self->position < self->source.len() {
+        const u8 BYTE = self->source[self->position];
+        if BYTE == QUOTE {
+            const usize END = self->position;
+            self->position++;
+            return (START, END, escaped, none);
+        }
+        if BYTE < 32 {
+            return (none, none, false, JsonError.InvalidSyntax);
+        }
+        if BYTE == BACKSLASH {
+            escaped = true;
+            self->position++;
+            if self->position >= self->source.len() {
+                return (none, none, false, JsonError.UnexpectedEnd);
+            }
+
+            const u8 ESCAPE = self->source[self->position];
+            self->position++;
+            const bool simple = ESCAPE == QUOTE or ESCAPE == BACKSLASH or
+                ESCAPE == 47 or ESCAPE == 98 or ESCAPE == 102 or
+                ESCAPE == 110 or ESCAPE == 114 or ESCAPE == 116;
+            if !simple {
+                if ESCAPE != 117 {
+                    return (none, none, false, JsonError.InvalidSyntax);
+                }
+
+                _, nextIndex, decodeError :=
+                    self->decodeEscapedCodePoint(self->position);
+                if decodeError != none {
+                    return (none, none, false, decodeError);
+                }
+                self->position = nextIndex;
+            }
+        } else if BYTE >= 128 {
+            nextIndex, decodeError := self->nextUtf8Position(self->position);
+            if decodeError != none {
+                return (none, none, false, JsonError.InvalidSyntax);
+            }
+            self->position = nextIndex;
+        } else {
+            self->position++;
+        }
+    }
+
+    return (none, none, false, JsonError.UnexpectedEnd);
+}
+
+private (usize, error) Reader::nextUtf8Position(
+    &const self,
+    usize position,
+) {
+    sourceText := strings::stringv_from_bytes(self->source);
+    _, nextPosition, decodeError := utf8::decode(sourceText, position);
+    return (nextPosition, decodeError);
+}
+
+private (u32, usize, error) Reader::decodeHex4(
+    &const self,
+    usize position,
+) {
+    if self->source.len() - position < 4 {
+        return (none, none, JsonError.UnexpectedEnd);
+    }
+
+    u32 value = 0;
+    loop usize i = 0; i < 4; i++ {
+        const u8 BYTE = self->source[position + i];
+        u32 digit = none;
+        bool valid = false;
+        if BYTE >= 48 and BYTE <= 57 {
+            digit = (BYTE - 48).cast<u32>;
+            valid = true;
+        }
+        if BYTE >= 65 and BYTE <= 70 {
+            digit = (BYTE - 65 + 10).cast<u32>;
+            valid = true;
+        }
+        if BYTE >= 97 and BYTE <= 102 {
+            digit = (BYTE - 97 + 10).cast<u32>;
+            valid = true;
+        }
+        if !valid {
+            return (none, none, JsonError.InvalidSyntax);
+        }
+
+        value = (value << 4) | digit;
+    }
+
+    return (value, position + 4, none);
+}
+
+private (u32, usize, error) Reader::decodeEscapedCodePoint(
+    &const self,
+    usize position,
+) {
+    first, nextIndex, firstError := self->decodeHex4(position);
+    if firstError != none {
+        return (none, none, firstError);
+    }
+
+    if first >= 55296 and first <= 56319 {
+        if self->source.len() - nextIndex < 6 {
+            return (none, none, JsonError.UnexpectedEnd);
+        }
+        if self->source[nextIndex] != BACKSLASH or
+            self->source[nextIndex + 1] != 117 {
+            return (none, none, JsonError.InvalidSyntax);
+        }
+
+        second, finalIndex, secondError := self->decodeHex4(nextIndex + 2);
+        if secondError != none {
+            return (none, none, secondError);
+        }
+        if second < 56320 or second > 57343 {
+            return (none, none, JsonError.InvalidSyntax);
+        }
+
+        const u32 CODE_POINT = 65536 + ((first - 55296) << 10) +
+            (second - 56320);
+        return (CODE_POINT, finalIndex, none);
+    }
+
+    if first >= 56320 and first <= 57343 {
+        return (none, none, JsonError.InvalidSyntax);
+    }
+
+    return (first, nextIndex, none);
+}
+
+private (string, error) Reader::decodeString(
+    &const self,
+    usize start,
+    usize end,
+) {
+    builder, allocationError := strings::StringBuilder::withCapacity(end - start);
+    if allocationError != none {
+        return (none, allocationError);
+    }
+
+    usize position = start;
+    usize segmentStart = start;
+    while position < end {
+        if self->source[position] != BACKSLASH {
+            position++;
+        } else {
+            err := builder.appendBytes(self->source[segmentStart:position]);
+            if err != none {
+                return (none, err);
+            }
+
+            position++;
+            const u8 ESCAPE = self->source[position];
+            position++;
+            if ESCAPE == 117 {
+                codePoint, nextIndex, decodeError :=
+                    self->decodeEscapedCodePoint(position);
+                if decodeError != none {
+                    return (none, decodeError);
+                }
+                position = nextIndex;
+                err = builder.appendCodePoint(codePoint);
+            } else {
+                u8 decoded = ESCAPE;
+                if ESCAPE == 98 {
+                    decoded = 8;
+                }
+                if ESCAPE == 102 {
+                    decoded = 12;
+                }
+                if ESCAPE == 110 {
+                    decoded = 10;
+                }
+                if ESCAPE == 114 {
+                    decoded = 13;
+                }
+                if ESCAPE == 116 {
+                    decoded = 9;
+                }
+                err = builder.appendChar(decoded.cast<char>);
+            }
+            if err != none {
+                return (none, err);
+            }
+            segmentStart = position;
+        }
+    }
+
+    err := builder.appendBytes(self->source[segmentStart:end]);
+    if err != none {
+        return (none, err);
+    }
+    return builder.toString();
+}
+
+private (usize, usize, bool, error) Reader::scanNumber(&self) {
+    const usize START = self->position;
+    if self->position >= self->source.len() {
+        return (none, none, false, JsonError.UnexpectedEnd);
+    }
+
+    if self->source[self->position] == MINUS {
+        self->position++;
+        if self->position >= self->source.len() {
+            return (none, none, false, JsonError.UnexpectedEnd);
+        }
+    }
+
+    u8 byte = self->source[self->position];
+    if byte == ZERO {
+        self->position++;
+        if self->position < self->source.len() {
+            byte = self->source[self->position];
+            if byte >= ZERO and byte <= NINE {
+                return (none, none, false, JsonError.InvalidSyntax);
+            }
+        }
+    } else if byte >= 49 and byte <= NINE {
+        while self->position < self->source.len() {
+            byte = self->source[self->position];
+            if byte < ZERO or byte > NINE {
+                break;
+            }
+            self->position++;
+        }
+    } else {
+        return (none, none, false, JsonError.TypeMismatch);
+    }
+
+    bool floating = false;
+    if self->position < self->source.len() and
+        self->source[self->position] == DECIMAL_POINT {
+        floating = true;
+        self->position++;
+        if self->position >= self->source.len() {
+            return (none, none, false, JsonError.UnexpectedEnd);
+        }
+        byte = self->source[self->position];
+        if byte < ZERO or byte > NINE {
+            return (none, none, false, JsonError.InvalidSyntax);
+        }
+        while self->position < self->source.len() {
+            byte = self->source[self->position];
+            if byte < ZERO or byte > NINE {
+                break;
+            }
+            self->position++;
+        }
+    }
+
+    if self->position < self->source.len() and
+        (self->source[self->position] == UPPER_E or
+            self->source[self->position] == LOWER_E) {
+        floating = true;
+        self->position++;
+        if self->position < self->source.len() and
+            (self->source[self->position] == PLUS or
+                self->source[self->position] == MINUS) {
+            self->position++;
+        }
+        if self->position >= self->source.len() {
+            return (none, none, false, JsonError.UnexpectedEnd);
+        }
+        byte = self->source[self->position];
+        if byte < ZERO or byte > NINE {
+            return (none, none, false, JsonError.InvalidSyntax);
+        }
+        while self->position < self->source.len() {
+            byte = self->source[self->position];
+            if byte < ZERO or byte > NINE {
+                break;
+            }
+            self->position++;
+        }
+    }
+
+    if !self->isValueBoundary(self->position) {
+        return (none, none, false, JsonError.InvalidSyntax);
+    }
+    return (START, self->position, floating, none);
+}
+
+private error Reader::readInteger<T: integer>(&self, &T output) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    self->skipWhitespace();
+    start, end, floating, scanError := self->scanNumber();
+    if scanError != none {
+        return self->remember(scanError);
+    }
+    if floating {
+        return self->remember(JsonError.TypeMismatch);
+    }
+
+    value, parseError := strings::stringv_to_int<T>(
+        strings::stringv_from_bytes(self->source[start:end])
+    );
+    if parseError == text_errors::ParseError.Overflow {
+        return self->remember(JsonError.NumberOutOfRange);
+    }
+    if parseError != none {
+        return self->remember(JsonError.InvalidSyntax);
+    }
+
+    *output = value;
+    return none;
+}
+
+private error Reader::readFloat<T: floating_point>(&self, &T output) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    self->skipWhitespace();
+    start, end, _, scanError := self->scanNumber();
+    if scanError != none {
+        return self->remember(scanError);
+    }
+
+    value, parseError := strings::stringv_to_float<T>(
+        strings::stringv_from_bytes(self->source[start:end])
+    );
+    if parseError == text_errors::ParseError.Overflow {
+        return self->remember(JsonError.NumberOutOfRange);
+    }
+    if parseError != none {
+        return self->remember(parseError);
+    }
+    if !float::is_finite<T>(value) {
+        return self->remember(JsonError.NumberOutOfRange);
+    }
+
+    *output = value;
+    return none;
+}
+
+private error Reader::skipRawValue(&self) {
+    self->skipWhitespace();
+    if self->position >= self->source.len() {
+        return JsonError.UnexpectedEnd;
+    }
+
+    const u8 FIRST = self->source[self->position];
+    if FIRST == 123 {
+        return self->skipRawObject();
+    }
+    if FIRST == 91 {
+        return self->skipRawArray();
+    }
+    if FIRST == QUOTE {
+        _, _, _, err := self->scanString();
+        return err;
+    }
+    if FIRST == 116 {
+        return self->consumeLiteral("true");
+    }
+    if FIRST == 102 {
+        return self->consumeLiteral("false");
+    }
+    if FIRST == 110 {
+        return self->consumeLiteral("null");
+    }
+    if FIRST == MINUS or (FIRST >= ZERO and FIRST <= NINE) {
+        _, _, _, err := self->scanNumber();
+        return err;
+    }
+
+    return JsonError.InvalidSyntax;
+}
+
+private error Reader::skipRawObject(&self) {
+    self->position++;
+    self->skipWhitespace();
+    if self->position >= self->source.len() {
+        return JsonError.UnexpectedEnd;
+    }
+    if self->source[self->position] == 125 {
+        self->position++;
+        return none;
+    }
+
+    while true {
+        if self->source[self->position] != QUOTE {
+            return JsonError.InvalidSyntax;
+        }
+        _, _, _, keyError := self->scanString();
+        if keyError != none {
+            return keyError;
+        }
+
+        self->skipWhitespace();
+        if self->position >= self->source.len() {
+            return JsonError.UnexpectedEnd;
+        }
+        if self->source[self->position] != 58 {
+            return JsonError.InvalidSyntax;
+        }
+        self->position++;
+
+        valueError := self->skipRawValue();
+        if valueError != none {
+            return valueError;
+        }
+
+        self->skipWhitespace();
+        if self->position >= self->source.len() {
+            return JsonError.UnexpectedEnd;
+        }
+        if self->source[self->position] == 125 {
+            self->position++;
+            return none;
+        }
+        if self->source[self->position] != 44 {
+            return JsonError.InvalidSyntax;
+        }
+
+        self->position++;
+        self->skipWhitespace();
+        if self->position >= self->source.len() {
+            return JsonError.UnexpectedEnd;
+        }
+        if self->source[self->position] == 125 {
+            return JsonError.InvalidSyntax;
+        }
+    }
+
+    return none;
+}
+
+private error Reader::skipRawArray(&self) {
+    self->position++;
+    self->skipWhitespace();
+    if self->position >= self->source.len() {
+        return JsonError.UnexpectedEnd;
+    }
+    if self->source[self->position] == 93 {
+        self->position++;
+        return none;
+    }
+
+    while true {
+        valueError := self->skipRawValue();
+        if valueError != none {
+            return valueError;
+        }
+
+        self->skipWhitespace();
+        if self->position >= self->source.len() {
+            return JsonError.UnexpectedEnd;
+        }
+        if self->source[self->position] == 93 {
+            self->position++;
+            return none;
+        }
+        if self->source[self->position] != 44 {
+            return JsonError.InvalidSyntax;
+        }
+
+        self->position++;
+        self->skipWhitespace();
+        if self->position >= self->source.len() {
+            return JsonError.UnexpectedEnd;
+        }
+        if self->source[self->position] == 93 {
+            return JsonError.InvalidSyntax;
+        }
+    }
+
+    return none;
+}
