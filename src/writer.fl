@@ -1,23 +1,413 @@
 module json;
 
-error Writer::beginObject(&self);
-error Writer::endObject(&self);
+@imports
+    :: lib::std::text::strings
+    :: lib::std::text::utf8
+    :: lib::std::math::float
+    :: lib::std::containers::collections as coll;
 
-error Writer::beginArray(&self);
-error Writer::endArray(&self);
+Writer Writer::init() override {
+    return build Writer {
+        self.output = strings::StringBuilder::init();
+        self.frames = coll::Array<Frame>::init();
+        self.failure = none;
+        self.rootWritten = false;
+    };
+}
 
-error Writer::key(&self, stringv name);
+error Writer::beginObject(&self) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
 
-error Writer::writeNull(&self);
+    err = self->append("{");
+    if err != none {
+        return err;
+    }
 
-error Writer::write(&self, bool value);
+    pushErr := self->frames.push(build Frame {
+        self.kind = ContainerKind.Object;
+        self.count = 0;
+        self.waitingForValue = false;
+    });
+    return self->remember(pushErr);
+}
 
-error Writer::write<T: integer>(&self, T value);
+error Writer::endObject(&self) {
+    err := self->requireContainer(ContainerKind.Object);
+    if err != none {
+        return err;
+    }
 
-error Writer::write<T: floating_point>(&self, T value);
+    frame, frameErr := self->frames.last();
+    if err != none {
+        return self->remember(frameErr);
+    }
 
-error Writer::write(&self, stringv value);
+    if frame.waitingForValue {
+        return self->remember(JsonError.InvalidState);
+    }
 
-error Writer::write(&self, &const string value);
+    err = self->append("}");
+    if err != none {
+        return err;
+    }
 
-(string, error) Writer::finish(&const self);
+    _, popErr := self->frames.pop();
+    return self->remember(popErr);
+}
+
+error Writer::beginArray(&self) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    err = self->append("[");
+    if err != none {
+        return err;
+    }
+
+    pushErr := self->frames.push(build Frame {
+        self.kind = ContainerKind.Array;
+        self.count = 0;
+        self.waitingForValue = false;
+    });
+    return self->remember(pushErr);
+}
+
+error Writer::endArray(&self) {
+    err := self->requireContainer(ContainerKind.Array);
+    if err != none {
+        return err;
+    }
+
+    err = self->append("]");
+    if err != none {
+        return err;
+    }
+
+   _, popErr := self->frames.pop(); 
+   return self->remember(popErr);
+}
+
+error Writer::key(&self, stringv name) {
+    if self->failure != none {
+        return self->failure;
+    }
+
+    validationErr := utf8::validate(name);
+    if validationErr != none {
+        return self->remember(validationErr);
+    }
+
+    err := self->requireContainer(ContainerKind.Object);
+    if err != none {
+        return err;
+    }
+
+    frame, err := self->frames.last();
+    if err != none {
+        return err;
+    }
+
+    if frame.waitingForValue {
+        return self->remember(JsonError.InvalidState);
+    }
+
+    if frame.count > 0 {
+        err = self->append(",");
+    } also err != none {
+        return err;
+    }
+
+    err = self->appendQuoted(name);
+    if err != none {
+        return err; 
+    }
+
+    err = self->append(":");
+    if err != none {
+        return err;
+    }
+
+    frames := self->frames.viewRef();
+    frames[frames.len() - 1].waitingForValue = true;
+    return none;
+}
+
+error Writer::writeNull(&self) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    return self->append("null");
+}
+
+error Writer::write(&self, bool value) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    writeErr := self->output.appendBool(value);
+    return self->remember(writeErr);
+}
+
+error Writer::write(&self, i8 value) {
+    return self->writeInteger<i8>(value);
+}
+
+error Writer::write(&self, i16 value) {
+    return self->writeInteger<i16>(value);
+}
+
+error Writer::write(&self, i32 value) {
+    return self->writeInteger<i32>(value);
+}
+
+error Writer::write(&self, i64 value) {
+    return self->writeInteger<i64>(value);
+}
+
+error Writer::write(&self, isize value) {
+    return self->writeInteger<isize>(value);
+}
+
+error Writer::write(&self, u8 value) {
+    return self->writeInteger<u8>(value);
+}
+
+error Writer::write(&self, u16 value) {
+    return self->writeInteger<u16>(value);
+}
+
+error Writer::write(&self, u32 value) {
+    return self->writeInteger<u32>(value);
+}
+
+error Writer::write(&self, u64 value) {
+    return self->writeInteger<u64>(value);
+}
+
+error Writer::write(&self, usize value) {
+    return self->writeInteger<usize>(value);
+}
+
+error Writer::write(&self, f32 value) {
+    return self->writeFloat<f32>(value);
+}
+
+error Writer::write(&self, f64 value) {
+    return self->writeFloat<f64>(value);
+}
+
+error Writer::write(&self, stringv value) {
+    if self->failure != none {
+        return self->failure;
+    }
+
+    validationError := utf8::validate(value);
+    if validationError != none {
+        return self->remember(validationError);
+    }
+
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    return self->appendQuoted(value);
+}
+
+error Writer::write(&self, string value) {
+    return self->write(value.view());
+}
+
+(string, error) Writer::finish(&const self) {
+    if self->failure != none {
+        return (none, self->failure);
+    }
+    if !self->rootWritten or !self->frames.empty() {
+        return (none, JsonError.IncompleteDocument);
+    }
+
+    return self->output.toString();
+}
+
+private error Writer::beforeValue(&self) {
+    if self->failure != none {
+        return self->failure;
+    }
+
+    if self->frames.empty() {
+        if self->rootWritten {
+            return self->remember(JsonError.InvalidState);
+        }
+
+        self->rootWritten = true;
+        return none;
+    }
+
+    frame, err := self->frames.last();
+    if err != none {
+        return self->remember(err);
+    }
+
+    if frame.kind == ContainerKind.Object {
+        if !frame.waitingForValue {
+            return self->remember(JsonError.InvalidState); 
+        }
+
+        frames := self->frames.viewRef();
+        const usize LAST = frames.len() - 1;
+        frames[LAST].waitingForValue = false;
+        frames[LAST].count++;
+        return none;
+    }
+
+    if frame.count > 0 {
+        err := self->append(",");
+        if err != none {
+            return err;
+        }
+    }
+
+    frames := self->frames.viewRef();
+    const usize LAST = frames.len() - 1;
+    frames[LAST].count++;
+    return none;
+}
+
+private error Writer::remember(&self, error err) {
+    if err != none and self->failure == none {
+        self->failure = err;
+    }
+
+    return self->failure;
+}
+
+private error Writer::append(&self, stringv value) {
+    if self->failure != none {
+        return self->failure;
+    }
+
+    err := self->output.append(value);
+    return self->remember(err);
+}
+
+private error Writer::requireContainer(&self, ContainerKind expected) {
+    if self->failure != none {
+        return self->failure;
+    }
+
+    if self->frames.empty() {
+        return self->remember(JsonError.InvalidState);
+    }
+
+    frame, err := self->frames.last();
+    if err != none {
+        return self->remember(err);
+    }
+
+    if frame.kind != expected {
+        return self->remember(JsonError.InvalidState);
+    }
+    
+    return none;
+}
+
+private error Writer::appendQuoted(&self, stringv value) {
+    err := self->append("\"");
+    if err != none {
+        return err;
+    }
+
+    loop u32 i = 0; i < value.len(); i++ {
+        const u8 BYTE = value[i];
+        err = self->appendEscapedByte(BYTE);
+        if err != none {
+            return err;
+        }
+    }
+
+    return self->append("\"");
+}
+
+private error Writer::appendEscapedByte(&self, u8 value) {
+    if value == 34 {
+        return self->append("\\\"");
+    }
+    if value == 92 {
+        return self->append("\\\\");
+    }
+    if value == 8 {
+        return self->append("\\b");
+    }
+    if value == 12 {
+        return self->append("\\f");
+    }
+    if value == 10 {
+        return self->append("\\n");
+    }
+    if value == 13 {
+        return self->append("\\r");
+    }
+    if value == 9 {
+        return self->append("\\t");
+    }
+    if value < 32 {
+        return self->appendControl(value);
+    }
+
+    appendError := self->output.appendChar(value.cast<char>);
+    return self->remember(appendError);
+}
+
+private error Writer::appendControl(&self, u8 value) {
+    err := self->append("\\u00");
+    if err != none {
+        return err;
+    }
+
+    const stringv HEX = "0123456789abcdef";
+
+    appendError := self->output.appendChar(
+        HEX[(value >> 4).cast<u32>]
+    );
+    err = self->remember(appendError);
+    if err != none {
+        return err;
+    }
+
+    appendError = self->output.appendChar(
+        HEX[(value & 15).cast<u32>]
+    );
+    return self->remember(appendError);
+}
+
+private error Writer::writeInteger<T: integer>(&self, T value) {
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    writeErr := self->output.appendInteger<T>(value);
+    return self->remember(writeErr);
+}
+
+private error Writer::writeFloat<T: floating_point>(&self, T value) {
+    if !float::is_finite<T>(value) {
+        return self->remember(JsonError.NonFiniteNumber);
+    }
+
+    err := self->beforeValue();
+    if err != none {
+        return err;
+    }
+
+    writeErr := self->output.appendFloat<T>(value);
+    return self->remember(writeErr);
+}
