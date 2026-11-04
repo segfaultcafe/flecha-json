@@ -1,7 +1,33 @@
 module json;
 
+@imports
+    :: lib::std::containers::collections as coll
+    :: lib::std::text::strings;
+
 export decoration json {};
 
-export i32 answer() {
-    return 42;
+export error JsonError {
+    InvalidState,
+    IncompleteDocument,
+    NonFiniteNumber,
 }
+
+enum ContainerKind {
+    Object,
+    Array,
+}
+
+structure Frame {
+    ContainerKind kind;
+    usize count;
+    bool waitingForValue;
+};
+
+export structure Writer {
+    private {
+        strings::StringBuilder output;
+        coll::Array<Frame> frames;
+        error failure;
+        bool rootWritten;
+    }
+};

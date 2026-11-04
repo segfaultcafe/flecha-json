@@ -1,0 +1,23 @@
+module json;
+
+error Writer::beginObject(&self);
+error Writer::endObject(&self);
+
+error Writer::beginArray(&self);
+error Writer::endArray(&self);
+
+error Writer::key(&self, stringv name);
+
+error Writer::writeNull(&self);
+
+error Writer::write(&self, bool value);
+
+error Writer::write<T: integer>(&self, T value);
+
+error Writer::write<T: floating_point>(&self, T value);
+
+error Writer::write(&self, stringv value);
+
+error Writer::write(&self, &const string value);
+
+(string, error) Writer::finish(&const self);
