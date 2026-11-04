@@ -41,7 +41,7 @@ error Writer::endObject(&self) {
     }
 
     frame, frameErr := self->frames.last();
-    if err != none {
+    if frameErr != none {
         return self->remember(frameErr);
     }
 
@@ -226,7 +226,7 @@ error Writer::write(&self, string value) {
     return self->write(value.view());
 }
 
-(string, error) Writer::finish(&const self) {
+(own []u8, error) Writer::finish(&const self) {
     if self->failure != none {
         return (none, self->failure);
     }
@@ -234,7 +234,17 @@ error Writer::write(&self, string value) {
         return (none, JsonError.IncompleteDocument);
     }
 
-    return self->output.toString();
+    source := self->output.bytes();
+    output, allocationError := new<own []u8>(source.len());
+    if allocationError != none {
+        return (none, allocationError);
+    }
+
+    loop usize index = 0; index < source.len(); index++ {
+        output[index] = source[index];
+    }
+
+    return (output, none);
 }
 
 private error Writer::beforeValue(&self) {

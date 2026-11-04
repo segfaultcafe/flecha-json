@@ -1,0 +1,335 @@
+module json_test;
+
+@imports
+    :: root::json
+    :: lib::std::tests::testing
+    :: lib::std::tests::asserts;
+
+@json(default)
+structure Location {
+    string country;
+    string city;
+};
+
+@json(default)
+structure Address {
+    Location location;
+    string street;
+    u32 number;
+};
+
+@json(default)
+structure Profile {
+    Address address;
+    @json("display_name") string displayName;
+    private string accessToken;
+};
+
+@json(default)
+structure User {
+    Profile profile;
+    bool active;
+};
+
+@json(default)
+structure Envelope {
+    @json("request_id") u64 requestId;
+    User user;
+};
+
+@json(explicit)
+structure ExplicitDocument {
+    @json("integer_value") i32 integerValue;
+    @json("text_value") string textValue;
+    @json("nested_value") Location nestedValue;
+};
+
+test serializes_deeply_nested_decorated_structures(&testing::UnitTest t) {
+    location := Location::init();
+    location.country = "BR";
+    location.city = "Sao Paulo";
+
+    address := Address::init();
+    address.location = location;
+    address.street = "Faria Lima";
+    address.number = 42;
+
+    profile := Profile::init();
+    profile.address = address;
+    profile.displayName = "alex";
+
+    user := User::init();
+    user.profile = profile;
+    user.active = true;
+
+    envelope := Envelope::init();
+    envelope.requestId = 9001;
+    envelope.user = user;
+
+    output, err := envelope.json();
+    asserts::is_true(t, err == none, "nested decorated structures serialize");
+    asserts::string_equal(
+        t,
+        output[:].cast<stringv>,
+        "{\"request_id\":9001,\"user\":{\"profile\":{\"address\":{\"location\":{\"country\":\"BR\",\"city\":\"Sao Paulo\"},\"street\":\"Faria Lima\",\"number\":42},\"display_name\":\"alex\"},\"active\":true}}",
+        "json() composes nested writers and omits private fields"
+    );
+}
+
+test serializes_explicit_fields_with_overridden_names(&testing::UnitTest t) {
+    location := Location::init();
+    location.country = "BR";
+    location.city = "Sao Paulo";
+
+    document := ExplicitDocument::init();
+    document.integerValue = 42;
+    document.textValue = "explicit";
+    document.nestedValue = location;
+
+    output, err := document.json();
+    asserts::is_true(t, err == none, "explicit decorated fields serialize");
+    asserts::string_equal(
+        t,
+        output[:].cast<stringv>,
+        "{\"integer_value\":42,\"text_value\":\"explicit\",\"nested_value\":{\"country\":\"BR\",\"city\":\"Sao Paulo\"}}",
+        "@json(explicit) uses every overridden field name"
+    );
+}
+
+test writes_nested_objects_arrays_and_null(&testing::UnitTest t) {
+    writer := json::Writer::init();
+    err := writer.beginObject();
+    if err == none {
+        err = writer.key("value");
+    }
+    if err == none {
+        err = writer.write(42);
+    }
+    if err == none {
+        err = writer.key("items");
+    }
+    if err == none {
+        err = writer.beginArray();
+    }
+    if err == none {
+        err = writer.write(true);
+    }
+    if err == none {
+        err = writer.write("text");
+    }
+    if err == none {
+        err = writer.writeNull();
+    }
+    if err == none {
+        err = writer.beginObject();
+    }
+    if err == none {
+        err = writer.endObject();
+    }
+    if err == none {
+        err = writer.endArray();
+    }
+    if err == none {
+        err = writer.endObject();
+    }
+
+    output, finishError := writer.finish();
+    asserts::is_true(t, err == none, "nested values write successfully");
+    asserts::is_true(t, finishError == none, "complete document finishes");
+    asserts::string_equal(
+        t,
+        output[:].cast<stringv>,
+        "{\"value\":42,\"items\":[true,\"text\",null,{}]}",
+        "writer produces compact nested JSON"
+    );
+}
+
+test writes_every_integer_overload(&testing::UnitTest t) {
+    writer := json::Writer::init();
+    i8 signed8 = -8;
+    i16 signed16 = -16;
+    i32 signed32 = -32;
+    i64 signed64 = -64;
+    isize signedSize = -5;
+    u8 unsigned8 = 8;
+    u16 unsigned16 = 16;
+    u32 unsigned32 = 32;
+    u64 unsigned64 = 64;
+    usize unsignedSize = 5;
+
+    err := writer.beginArray();
+    if err == none { err = writer.write(signed8); }
+    if err == none { err = writer.write(signed16); }
+    if err == none { err = writer.write(signed32); }
+    if err == none { err = writer.write(signed64); }
+    if err == none { err = writer.write(signedSize); }
+    if err == none { err = writer.write(unsigned8); }
+    if err == none { err = writer.write(unsigned16); }
+    if err == none { err = writer.write(unsigned32); }
+    if err == none { err = writer.write(unsigned64); }
+    if err == none { err = writer.write(unsignedSize); }
+    if err == none { err = writer.endArray(); }
+
+    output, finishError := writer.finish();
+    asserts::is_true(t, err == none, "all integer overloads write");
+    asserts::is_true(t, finishError == none, "integer array finishes");
+    asserts::string_equal(
+        t,
+        output[:].cast<stringv>,
+        "[-8,-16,-32,-64,-5,8,16,32,64,5]",
+        "integer overloads preserve decimal values"
+    );
+}
+
+test writes_booleans_floats_and_owned_strings(&testing::UnitTest t) {
+    writer := json::Writer::init();
+    f32 single = 1.25 as f32;
+    f64 double = -0.5;
+    string owned = "owned".string();
+
+    err := writer.beginArray();
+    if err == none { err = writer.write(false); }
+    if err == none { err = writer.write(single); }
+    if err == none { err = writer.write(double); }
+    if err == none { err = writer.write(owned); }
+    if err == none { err = writer.endArray(); }
+
+    output, finishError := writer.finish();
+    asserts::is_true(t, err == none, "scalar overloads write");
+    asserts::is_true(t, finishError == none, "scalar array finishes");
+    asserts::string_equal(
+        t,
+        output[:].cast<stringv>,
+        "[false,1.25,-0.5,\"owned\"]",
+        "boolean, floating-point, and owning string values serialize"
+    );
+}
+
+test escapes_strings_and_preserves_utf8(&testing::UnitTest t) {
+    writer := json::Writer::init();
+    err := writer.write("quote=\" slash=\\ line=\n tab=\t snowman=☃");
+
+    output, finishError := writer.finish();
+    asserts::is_true(t, err == none, "escaped UTF-8 string writes");
+    asserts::is_true(t, finishError == none, "string document finishes");
+    asserts::string_equal(
+        t,
+        output[:].cast<stringv>,
+        "\"quote=\\\" slash=\\\\ line=\\n tab=\\t snowman=☃\"",
+        "JSON escapes syntax bytes and preserves valid UTF-8 bytes"
+    );
+}
+
+test rejects_non_finite_numbers(&testing::UnitTest t) {
+    nanWriter := json::Writer::init();
+    nanError := nanWriter.write(f64.nan);
+    _, nanFinishError := nanWriter.finish();
+
+    infinityWriter := json::Writer::init();
+    infinityError := infinityWriter.write(f32.infinity);
+
+    asserts::has_error_variant(
+        t,
+        nanError,
+        json::JsonError.NonFiniteNumber,
+        "NaN is not valid JSON"
+    );
+    asserts::has_error_variant(
+        t,
+        nanFinishError,
+        json::JsonError.NonFiniteNumber,
+        "the first writer error remains sticky"
+    );
+    asserts::has_error_variant(
+        t,
+        infinityError,
+        json::JsonError.NonFiniteNumber,
+        "infinity is not valid JSON"
+    );
+}
+
+test rejects_invalid_object_and_root_transitions(&testing::UnitTest t) {
+    missingKey := json::Writer::init();
+    missingKeyError := missingKey.beginObject();
+    if missingKeyError == none {
+        missingKeyError = missingKey.write(1);
+    }
+
+    missingValue := json::Writer::init();
+    missingValueError := missingValue.beginObject();
+    if missingValueError == none {
+        missingValueError = missingValue.key("value");
+    }
+    if missingValueError == none {
+        missingValueError = missingValue.endObject();
+    }
+
+    duplicateRoot := json::Writer::init();
+    duplicateRootError := duplicateRoot.write(true);
+    if duplicateRootError == none {
+        duplicateRootError = duplicateRoot.write(false);
+    }
+
+    keyOutsideObject := json::Writer::init();
+    outsideError := keyOutsideObject.key("value");
+
+    asserts::has_error_variant(
+        t,
+        missingKeyError,
+        json::JsonError.InvalidState,
+        "object values require a preceding key"
+    );
+    asserts::has_error_variant(
+        t,
+        missingValueError,
+        json::JsonError.InvalidState,
+        "object keys require a following value"
+    );
+    asserts::has_error_variant(
+        t,
+        duplicateRootError,
+        json::JsonError.InvalidState,
+        "a document accepts exactly one root value"
+    );
+    asserts::has_error_variant(
+        t,
+        outsideError,
+        json::JsonError.InvalidState,
+        "keys are valid only inside objects"
+    );
+}
+
+test rejects_mismatched_and_incomplete_containers(&testing::UnitTest t) {
+    mismatched := json::Writer::init();
+    mismatchedError := mismatched.beginArray();
+    if mismatchedError == none {
+        mismatchedError = mismatched.endObject();
+    }
+
+    incomplete := json::Writer::init();
+    incompleteError := incomplete.beginArray();
+    _, finishError := incomplete.finish();
+
+    empty := json::Writer::init();
+    _, emptyFinishError := empty.finish();
+
+    asserts::has_error_variant(
+        t,
+        mismatchedError,
+        json::JsonError.InvalidState,
+        "containers must close with the matching delimiter"
+    );
+    asserts::is_true(t, incompleteError == none, "opening an array succeeds");
+    asserts::has_error_variant(
+        t,
+        finishError,
+        json::JsonError.IncompleteDocument,
+        "open containers cannot be finished"
+    );
+    asserts::has_error_variant(
+        t,
+        emptyFinishError,
+        json::JsonError.IncompleteDocument,
+        "a document requires one root value"
+    );
+}
