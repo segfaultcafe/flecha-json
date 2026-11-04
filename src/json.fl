@@ -1,0 +1,7 @@
+module json;
+
+export decoration json {};
+
+export i32 answer() {
+    return 42;
+}
