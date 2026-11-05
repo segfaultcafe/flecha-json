@@ -43,8 +43,7 @@ overrides its JSON name.
 module example;
 
 @imports
-    :: lib::json::json
-    :: lib::std::io::console;
+    :: lib::json::json;
 
 @json(structure)
 structure User {
@@ -60,12 +59,12 @@ void main() {
 
     encoded, writeError := user.json();
     if writeError == none {
-        console::stdoutln(encoded[:].cast<stringv>);
+        stdoutln(encoded[:].cast<stringv>);
     }
 
     decoded, readError := User::fromJson(encoded[:]);
     if readError == none {
-        console::stdoutln(decoded.displayName);
+        stdoutln(decoded.displayName);
     }
 }
 ```
