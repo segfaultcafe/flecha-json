@@ -1,7 +1,7 @@
 [package]
 name = "json"
 registry = "flecha/json"
-version = "0.1.0"
+version = "0.1.1"
 kind = "library"
 flecha = ">=0.3.0, <0.4.0"
 

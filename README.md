@@ -9,7 +9,7 @@
 - UTF-8 validation, JSON string escaping, Unicode escape decoding, and checked
   numeric conversion.
 
-Version `0.1.0` requires Flecha and Longbow `>=0.3.0, <0.4.0`.
+Version `0.1.1` requires Flecha and Longbow `>=0.3.0, <0.4.0`.
 
 ## Install
 
@@ -39,6 +39,7 @@ The dependency alias (`json` above) controls the import path:
 fields are included by default; private fields are omitted. A field decoration
 overrides its JSON name.
 
+<!-- checked-example:start -->
 ```flecha
 module example;
 
@@ -68,6 +69,7 @@ void main() {
     }
 }
 ```
+<!-- checked-example:end -->
 
 The encoded document is:
 
@@ -147,7 +149,7 @@ git diff --check
 ```
 
 The source archive produced by `publish --dry-run` is deterministic. Published
-`owner/package/version` tuples are immutable, so release `0.1.0` is published
+`owner/package/version` tuples are immutable, so release `0.1.1` is published
 only after the dry-run checksum and a clean consumer build have been verified.
 
 ## License
