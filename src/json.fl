@@ -7,9 +7,7 @@ module json;
 /*
     Flecha 0.3.x compiler-known decoration. Generated code depends on the
     exported Writer and Reader protocol, so those public APIs must change only
-    with a coordinated compiler update. The planned v0.4.0 behavior engine
-    moves this implementation out of the compiler while preserving this public
-    declaration and its application syntax.
+    with a coordinated compiler update.
 */
 export decoration json;
 

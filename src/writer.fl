@@ -102,8 +102,8 @@ error Writer::endArray(&self) {
         return err;
     }
 
-   _, popErr := self->frames.pop(); 
-   return self->remember(popErr);
+    _, popErr := self->frames.pop();
+    return self->remember(popErr);
 }
 
 error Writer::key(&self, stringv name) {
@@ -138,7 +138,7 @@ error Writer::key(&self, stringv name) {
 
     err = self->appendQuoted(name);
     if err != none {
-        return err; 
+        return err;
     }
 
     err = self->append(":");
@@ -282,7 +282,7 @@ private error Writer::beforeValue(&self) {
 
     if frame.kind == ContainerKind.Object {
         if !frame.waitingForValue {
-            return self->remember(JsonError.InvalidState); 
+            return self->remember(JsonError.InvalidState);
         }
 
         frames := self->frames.viewRef();
@@ -339,7 +339,7 @@ private error Writer::requireContainer(&self, ContainerKind expected) {
     if frame.kind != expected {
         return self->remember(JsonError.InvalidState);
     }
-    
+
     return none;
 }
 

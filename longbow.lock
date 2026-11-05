@@ -10,6 +10,7 @@
         "path": "."
       },
       "version": "0.1.0",
+      "flecha": ">=0.3.0, <0.4.0",
       "dependencies": {
         "std": "toolchain-std"
       }

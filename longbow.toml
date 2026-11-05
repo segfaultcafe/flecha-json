@@ -3,5 +3,6 @@ name = "json"
 registry = "flecha/json"
 version = "0.1.0"
 kind = "library"
+flecha = ">=0.3.0, <0.4.0"
 
 [dependencies]
