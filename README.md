@@ -96,6 +96,8 @@ document, finishError := writer.finish();
 Supported scalar overloads cover `bool`, all Flecha integer types, `f32`,
 `f64`, `stringv`, and `string`; `writeNull()` writes JSON null. Non-finite
 floating-point values are rejected because JSON cannot represent them.
+`writeRaw()` embeds one already serialized JSON value after validating the
+complete input, including nested syntax and trailing data.
 
 ## Streaming reader
 

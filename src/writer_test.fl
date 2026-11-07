@@ -143,6 +143,132 @@ test writes_nested_objects_arrays_and_null(&testing::UnitTest t) {
     );
 }
 
+test writes_valid_raw_json_at_the_root(&testing::UnitTest t) {
+    writer := json::Writer::init();
+    err := writer.writeRaw(
+        "{\"name\":\"flecha\",\"values\":[1,true,null]}"
+            .cast<[]const u8>
+    );
+
+    output, finishError := writer.finish();
+    asserts::is_true(t, err == none, "a complete raw JSON value writes");
+    asserts::is_true(t, finishError == none, "a raw root value finishes");
+    asserts::string_equal(
+        t,
+        output[:].cast<stringv>,
+        "{\"name\":\"flecha\",\"values\":[1,true,null]}",
+        "writeRaw preserves the validated JSON bytes"
+    );
+}
+
+test writes_raw_json_inside_objects_and_arrays(&testing::UnitTest t) {
+    writer := json::Writer::init();
+    err := writer.beginObject();
+    if err == none { err = writer.key("result"); }
+    if err == none {
+        err = writer.writeRaw("[1,{\"ready\":true}]".cast<[]const u8>);
+    }
+    if err == none { err = writer.key("extra"); }
+    if err == none { err = writer.beginArray(); }
+    if err == none {
+        err = writer.writeRaw("\"done\"".cast<[]const u8>);
+    }
+    if err == none {
+        err = writer.writeRaw("42".cast<[]const u8>);
+    }
+    if err == none { err = writer.endArray(); }
+    if err == none { err = writer.endObject(); }
+
+    output, finishError := writer.finish();
+    asserts::is_true(t, err == none, "raw container values compose");
+    asserts::is_true(t, finishError == none, "the composed document finishes");
+    asserts::string_equal(
+        t,
+        output[:].cast<stringv>,
+        "{\"result\":[1,{\"ready\":true}],\"extra\":[\"done\",42]}",
+        "writeRaw participates in object and array state transitions"
+    );
+}
+
+test rejects_invalid_raw_json_documents(&testing::UnitTest t) {
+    empty := json::Writer::init();
+    emptyError := empty.writeRaw("".cast<[]const u8>);
+
+    incomplete := json::Writer::init();
+    incompleteError := incomplete.writeRaw("{\"value\":".cast<[]const u8>);
+
+    trailing := json::Writer::init();
+    trailingError := trailing.writeRaw("{}[]".cast<[]const u8>);
+
+    malformed := json::Writer::init();
+    malformedError := malformed.writeRaw("{]".cast<[]const u8>);
+
+    asserts::has_error_variant(
+        t,
+        emptyError,
+        json::JsonError.UnexpectedEnd,
+        "an empty raw value is rejected"
+    );
+    asserts::has_error_variant(
+        t,
+        incompleteError,
+        json::JsonError.UnexpectedEnd,
+        "an incomplete raw value is rejected"
+    );
+    asserts::has_error_variant(
+        t,
+        trailingError,
+        json::JsonError.TrailingData,
+        "writeRaw requires exactly one JSON value"
+    );
+    asserts::has_error_variant(
+        t,
+        malformedError,
+        json::JsonError.InvalidSyntax,
+        "malformed raw JSON is rejected"
+    );
+}
+
+test preserves_raw_json_failures_and_writer_state_rules(
+    &testing::UnitTest t
+) {
+    invalid := json::Writer::init();
+    firstError := invalid.writeRaw("{}[]".cast<[]const u8>);
+    secondError := invalid.write(true);
+    _, finishError := invalid.finish();
+
+    missingKey := json::Writer::init();
+    stateError := missingKey.beginObject();
+    if stateError == none {
+        stateError = missingKey.writeRaw("1".cast<[]const u8>);
+    }
+
+    asserts::has_error_variant(
+        t,
+        firstError,
+        json::JsonError.TrailingData,
+        "invalid raw JSON reports its validation error"
+    );
+    asserts::has_error_variant(
+        t,
+        secondError,
+        json::JsonError.TrailingData,
+        "the first raw JSON error remains sticky"
+    );
+    asserts::has_error_variant(
+        t,
+        finishError,
+        json::JsonError.TrailingData,
+        "finish preserves the raw JSON failure"
+    );
+    asserts::has_error_variant(
+        t,
+        stateError,
+        json::JsonError.InvalidState,
+        "raw object values still require a preceding key"
+    );
+}
+
 test writes_every_integer_overload(&testing::UnitTest t) {
     writer := json::Writer::init();
     i8 signed8 = -8;

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add `Writer::writeRaw()` for embedding one pre-serialized JSON value after
+  strict syntax and trailing-data validation.
+
 ## 0.1.1 - 2026-11-05
 
 - Correct the generated-structure README example to use Flecha's built-in

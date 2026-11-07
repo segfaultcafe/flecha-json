@@ -261,6 +261,29 @@ error Writer::write(&self, string value) {
     return (output, none);
 }
 
+error Writer::writeRaw(&self, []const u8 value) {
+    if self->failure != none {
+        return self->failure;
+    }
+
+    reader := Reader::init(value);
+    validationErr := reader.skipValue();
+    if validationErr == none {
+        validationErr = reader.finish();
+    }
+
+    if validationErr != none {
+        return self->remember(validationErr);
+    }
+
+    stateErr := self->beforeValue();
+    if stateErr != none {
+        return stateErr;
+    }
+
+    return self->append(value.cast<stringv>);
+}
+
 private error Writer::beforeValue(&self) {
     if self->failure != none {
         return self->failure;
