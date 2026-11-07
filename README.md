@@ -9,7 +9,7 @@
 - UTF-8 validation, JSON string escaping, Unicode escape decoding, and checked
   numeric conversion.
 
-Version `0.1.1` requires Flecha and Longbow `>=0.3.0, <0.4.0`.
+Version `0.1.2` requires Flecha and Longbow `>=0.3.0, <0.4.0`.
 
 ## Install
 
@@ -151,7 +151,7 @@ git diff --check
 ```
 
 The source archive produced by `publish --dry-run` is deterministic. Published
-`owner/package/version` tuples are immutable, so release `0.1.1` is published
+`owner/package/version` tuples are immutable, so release `0.1.2` is published
 only after the dry-run checksum and a clean consumer build have been verified.
 
 ## License

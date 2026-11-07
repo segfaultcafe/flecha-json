@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 - 2026-11-07
 
 - Add `Writer::writeRaw()` for embedding one pre-serialized JSON value after
   strict syntax and trailing-data validation.
