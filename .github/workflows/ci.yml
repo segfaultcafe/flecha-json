@@ -57,4 +57,4 @@ jobs:
           longbow publish --dry-run > "$RUNNER_TEMP/dry-run-1.txt"
           longbow publish --dry-run > "$RUNNER_TEMP/dry-run-2.txt"
           diff --unified "$RUNNER_TEMP/dry-run-1.txt" "$RUNNER_TEMP/dry-run-2.txt"
-          grep --fixed-strings 'flecha/json@0.1.1' "$RUNNER_TEMP/dry-run-1.txt"
+          grep --fixed-strings 'flecha/json@0.1.2' "$RUNNER_TEMP/dry-run-1.txt"
