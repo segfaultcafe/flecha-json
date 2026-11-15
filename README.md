@@ -9,25 +9,23 @@
 - UTF-8 validation, JSON string escaping, Unicode escape decoding, and checked
   numeric conversion.
 
-This working tree is the v1 migration in progress and requires Flecha
-`>=0.4.0, <0.5.0`, including support for reflection inside runtime loops and
-managed interface returns. The published `0.1.2` package still targets Flecha
-0.3. The registry installation commands below refer to that published version;
-use a local path dependency to test this development checkout.
+Version `0.2.0` requires Flecha `>=0.4.0, <0.5.0`, including support for
+reflection inside runtime loops, managed interface returns, and owned-slice
+type patterns.
 
 ## Install
 
-Add the immutable public package with Longbow 0.3:
+Add the immutable public package with Longbow 0.4:
 
 ```sh
-longbow add flecha/json@^0.1 --as json
+longbow add flecha/json@^0.2 --as json
 ```
 
 Or declare it directly:
 
 ```toml
 [dependencies]
-json = { package = "flecha/json", version = "^0.1" }
+json = { package = "flecha/json", version = "^0.2" }
 ```
 
 The dependency alias (`json` above) controls the import path:
@@ -146,7 +144,7 @@ Allocation and UTF-8 errors from the standard library may also be returned.
 
 ## Development
 
-Use the Flecha 0.3 toolchain to validate the package:
+Use the Flecha 0.4 toolchain to validate the package:
 
 ```sh
 longbow check
@@ -156,14 +154,14 @@ git diff --check
 ```
 
 The source archive produced by `publish --dry-run` is deterministic. Published
-`owner/package/version` tuples are immutable, so release `0.1.2` is published
+`owner/package/version` tuples are immutable, so release `0.2.0` is published
 only after the dry-run checksum and a clean consumer build have been verified.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
-## v1 migration status
+## 0.2 status
 
 The behavior supports scalar fields and nested structures, public-field selection,
 explicit field names, private-field omission, and compile-time rejection of
@@ -171,9 +169,10 @@ private annotations and duplicate selected names. `JsonReadable` requires only
 `readJson`; handwritten implementations need no reflection helper. The generated
 reader skips unknown properties and propagates parsing errors.
 
-Owned sequence fields (`own []T`), allocation-failure parity, release packaging,
-and the CI toolchain update remain migration work. The streaming array API
-continues to work independently of owned sequence derivation.
+Owned sequence fields (`own []T`) compose recursively with scalars, strings,
+and derived structures. Failed sequence decoding preserves the previous owner.
+The streaming array API continues to work independently of owned sequence
+derivation.
 
 ## Stress testing
 

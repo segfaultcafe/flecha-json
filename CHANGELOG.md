@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 - 2026-11-15
+
+- Move `@json` structure serialization and deserialization from compiler-owned
+  generation to library-defined `JsonWritable` and `JsonReadable` behaviors.
+- Add recursive owned-sequence support and deterministic stress, grammar-corpus,
+  and adversarial coverage.
+- Require Flecha `>=0.4.0, <0.5.0` and validate against the pinned 0.4 toolchain.
+
 ## 0.1.2 - 2026-11-07
 
 - Add `Writer::writeRaw()` for embedding one pre-serialized JSON value after
