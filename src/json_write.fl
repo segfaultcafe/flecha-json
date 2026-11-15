@@ -1,0 +1,8 @@
+module json;
+
+(own []u8, error) JsonWritable::json(&const self) {
+    writer := Writer::init();
+    error err = self->writeJson(&writer);
+    if err != none { return (none, err); }
+    return writer.finish();
+}

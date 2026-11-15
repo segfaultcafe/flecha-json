@@ -1,0 +1,77 @@
+module json_test;
+
+@imports
+    :: root::json
+    :: lib::std::tests::testing
+    :: lib::std::tests::asserts;
+
+@json(structure)
+structure EmptyDocument {};
+
+bool Document::tokenEmpty(&const self) { return self->token.view() == ""; }
+
+test roundtrips_all_numeric_types(&testing::UnitTest t) {
+    source := Scalars::init();
+    source.a = -1; source.b = -2; source.c = -3; source.d = -4; source.e = -5;
+    source.f = 1; source.g = 2; source.h = 3; source.i = 4; source.j = 5;
+    source.k = 1.5.cast<f32>; source.l = 2.5; source.m = true;
+    encoded, writeError := source.json();
+    asserts::is_true(t, writeError == none, "scalar serialization succeeds");
+    value, readError := json::from<Scalars>(encoded[:]);
+    asserts::is_true(t, readError == none, "scalar deserialization succeeds");
+    asserts::is_true(t, value.a == -1 and value.b == -2 and value.c == -3
+        and value.d == -4 and value.e == -5, "signed integers roundtrip");
+    asserts::is_true(t, value.f == 1 and value.g == 2 and value.h == 3
+        and value.i == 4 and value.j == 5, "unsigned integers roundtrip");
+    asserts::is_true(t, value.k == 1.5.cast<f32> and value.l == 2.5 and value.m,
+        "floating point and booleans roundtrip");
+}
+
+test reads_repeated_and_escaped_keys(&testing::UnitTest t) {
+    value, err := json::from<Document>(
+        "{\"display_name\":\"first\",\"unknown\":{\"items\":[1,true,null]},\"display\\u005fname\":\"last\",\"child\":{\"title\":\"nested\"},\"active\":true,\"token\":\"ignored\"}".cast<[]const u8>);
+    asserts::is_true(t, err == none, "runtime property loop reads all properties");
+    asserts::string_equal(t, value.name.view(), "last", "last repeated property wins");
+    asserts::string_equal(t, value.child.title.view(), "nested", "nested fields decode");
+    asserts::is_true(t, value.tokenEmpty(), "private fields remain omitted");
+    asserts::is_true(t, value.active, "reading continues after nested values");
+}
+
+test reads_manual_contract_without_helper(&testing::UnitTest t) {
+    direct, directError := json::from<Manual>("42".cast<[]const u8>);
+    asserts::is_true(t, directError == none and direct.value == 42,
+        "handwritten readJson is the complete contract");
+    nested, nestedError := json::from<Custom>("{\"child\":7}".cast<[]const u8>);
+    asserts::is_true(t, nestedError == none and nested.child.value == 7,
+        "behavior composes handwritten readers");
+    empty, emptyError := json::from<EmptyDocument>("{\"ignored\":[1,{\"x\":true}]}".cast<[]const u8>);
+    asserts::is_true(t, emptyError == none, "empty reflected packs still skip unknown values");
+}
+
+test propagates_behavior_reader_errors(&testing::UnitTest t) {
+    wrong, typeError := json::from<Document>("{\"active\":42}".cast<[]const u8>);
+    asserts::is_true(t, typeError == json::JsonError.TypeMismatch, "field type mismatch propagates");
+    trailing, trailingError := json::from<Document>("{} true".cast<[]const u8>);
+    asserts::is_true(t, trailingError == json::JsonError.TrailingData, "from checks document completion");
+    malformed, syntaxError := json::from<Document>("{\"unknown\":[1,]}".cast<[]const u8>);
+    asserts::is_true(t, syntaxError != none, "unknown values are still validated");
+    truncated, endError := json::from<Document>("{\"display_name\":\"partial\",\"child\":".cast<[]const u8>);
+    asserts::is_true(t, endError != none, "partial nested input fails and retains managed cleanup");
+    overflow, rangeError := json::from<Scalars>("{\"a\":128}".cast<[]const u8>);
+    asserts::is_true(t, rangeError == json::JsonError.NumberOutOfRange, "numeric overflow propagates");
+}
+
+test reads_only_selected_fields(&testing::UnitTest t) {
+    value, err := json::from<Selected>("{\"excluded\":99,\"included\":100,\"value\":42}".cast<[]const u8>);
+    asserts::is_true(t, err == none, "selected fields decode successfully");
+    asserts::is_true(t, value.included == 42, "decorated name replaces the field name");
+    asserts::is_true(t, value.excluded == 0, "undecorated fields remain omitted");
+}
+
+test read_json_rejects_non_object_root(&testing::UnitTest t) {
+    value := Document::init();
+    reader := json::Reader::init("[]".cast<[]const u8>);
+    err := value.readJson(&reader);
+    asserts::is_true(t, err == json::JsonError.TypeMismatch,
+        "readJson propagates beginObject errors directly");
+}

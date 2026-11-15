@@ -289,12 +289,12 @@ test rejects_invalid_reader_transitions_and_trailing_commas(
 }
 
 test deserializes_deeply_nested_decorated_structures(&testing::UnitTest t) {
-    envelope, err := Envelope::fromJson(
+    envelope, err := json::from<Envelope>(
         "{\"ignored\":{\"items\":[1,{\"deep\":true}]},\"request_id\":99,\"user\":{\"profile\":{\"address\":{\"location\":{\"country\":\"BR\",\"city\":\"Sao Paulo\"},\"street\":\"Faria Lima\",\"number\":42},\"display_name\":\"alex\"},\"active\":true}}"
             .cast<[]const u8>
     );
 
-    asserts::is_true(t, err == none, "the generated fromJson helper succeeds");
+    asserts::is_true(t, err == none, "the generic from helper succeeds");
     asserts::is_true(t, envelope.requestId == 99, "renamed integer fields decode");
     asserts::is_true(t, envelope.user.active, "nested booleans decode");
     asserts::string_equal(
@@ -318,12 +318,12 @@ test deserializes_deeply_nested_decorated_structures(&testing::UnitTest t) {
 }
 
 test deserializes_explicit_decorated_fields(&testing::UnitTest t) {
-    document, err := ExplicitDocument::fromJson(
+    document, err := json::from<ExplicitDocument>(
         "{\"ignored\":true,\"integer_value\":7,\"text_value\":\"ok\",\"nested_value\":{\"country\":\"US\",\"city\":\"New York\"}}"
             .cast<[]const u8>
     );
 
-    asserts::is_true(t, err == none, "explicit-mode fromJson succeeds");
+    asserts::is_true(t, err == none, "explicit-mode from succeeds");
     asserts::is_true(t, document.integerValue == 7, "explicit integer decodes");
     asserts::string_equal(
         t,

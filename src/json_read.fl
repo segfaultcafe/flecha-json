@@ -1,0 +1,9 @@
+module json;
+
+export (T, error) from<T: JsonReadable>([]const u8 source) {
+    T value = T::zero();
+    reader := Reader::init(source);
+    error err = value.readJson(&reader);
+    if err == none { err = reader.finish(); }
+    return (value, err);
+}

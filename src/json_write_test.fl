@@ -1,0 +1,87 @@
+module json_test;
+
+@imports
+    :: root::json
+    :: lib::std::tests::testing
+    :: lib::std::tests::asserts;
+
+@json(structure)
+structure Child { string title; };
+
+@json(structure)
+structure Document {
+    @json("display_name") string name;
+    Child child;
+    bool active;
+    private string token;
+};
+
+structure Selected {
+    @json("value") i32 included;
+    i32 excluded;
+};
+
+@json(structure)
+structure Scalars {
+    i8 a; i16 b; i32 c; i64 d; isize e;
+    u8 f; u16 g; u32 h; u64 i; usize j;
+    f32 k; f64 l; bool m;
+};
+
+structure Manual << json::JsonWritable, json::JsonReadable { i32 value; };
+error Manual::writeJson(&const self, &json::Writer writer) override {
+    return writer->write(self->value);
+}
+
+error Manual::readJson(&self, &json::Reader reader) override {
+    return reader->read(&self->value);
+}
+
+@json(structure)
+structure Custom { Manual child; };
+
+test writes_nested_public_fields(&testing::UnitTest t) {
+    document := Document::init();
+    document.name = "Ada";
+    document.child.title = "nested";
+    document.active = true;
+    encoded, err := document.json();
+    asserts::is_true(t, err == none, "behavior serialization succeeds");
+    asserts::string_equal(t, encoded[:].cast<stringv>,
+        "{\"display_name\":\"Ada\",\"child\":{\"title\":\"nested\"},\"active\":true}",
+        "renaming, nested structures and private omission");
+}
+
+test selects_explicit_fields_only(&testing::UnitTest t) {
+    value := Selected::init();
+    value.included = 42;
+    value.excluded = 99;
+    encoded, err := value.json();
+    asserts::is_true(t, err == none, "field metadata activates the behavior");
+    asserts::string_equal(t, encoded[:].cast<stringv>, "{\"value\":42}",
+        "undecorated fields stay excluded in explicit mode");
+}
+
+test writes_all_scalar_types(&testing::UnitTest t) {
+    value := Scalars::init();
+    value.a = -1; value.b = -2; value.c = -3; value.d = -4; value.e = -5;
+    value.f = 1; value.g = 2; value.h = 3; value.i = 4; value.j = 5;
+    value.k = 1.5.cast<f32>; value.l = 2.5; value.m = true;
+    encoded, err := value.json();
+    asserts::is_true(t, err == none, "all scalar overloads work through reflection");
+    asserts::string_equal(t, encoded[:].cast<stringv>,
+        "{\"a\":-1,\"b\":-2,\"c\":-3,\"d\":-4,\"e\":-5,\"f\":1,\"g\":2,\"h\":3,\"i\":4,\"j\":5,\"k\":1.5,\"l\":2.5,\"m\":true}",
+        "scalar output preserves field order");
+}
+
+test composes_handwritten_writers(&testing::UnitTest t) {
+    value := Custom::init();
+    value.child.value = 42;
+    encoded, err := value.json();
+    asserts::is_true(t, err == none, "nested handwritten contract is supported");
+    asserts::string_equal(t, encoded[:].cast<stringv>, "{\"child\":42}",
+        "behavior calls the handwritten provider");
+    direct, directError := value.child.json();
+    asserts::is_true(t, directError == none, "interface wrapper works on manual providers");
+    asserts::string_equal(t, direct[:].cast<stringv>, "42", "manual provider output");
+}

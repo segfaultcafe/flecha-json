@@ -2,14 +2,18 @@
 
 `flecha/json` is the JSON library for Flecha. It provides:
 
-- compiler-integrated `@json` serialization and deserialization for structures;
+- library-defined `@json` behaviors for structure serialization and deserialization;
 - a streaming writer for objects, arrays, strings, numbers, booleans, and null;
 - a streaming reader with nested traversal, unknown-value skipping, and strict
   JSON validation; and
 - UTF-8 validation, JSON string escaping, Unicode escape decoding, and checked
   numeric conversion.
 
-Version `0.1.2` requires Flecha and Longbow `>=0.3.0, <0.4.0`.
+This working tree is the v1 migration in progress and requires Flecha
+`>=0.4.0, <0.5.0`, including support for reflection inside runtime loops and
+managed interface returns. The published `0.1.2` package still targets Flecha
+0.3. The registry installation commands below refer to that published version;
+use a local path dependency to test this development checkout.
 
 ## Install
 
@@ -35,7 +39,8 @@ The dependency alias (`json` above) controls the import path:
 
 ## Decorated structures
 
-`@json(structure)` generates `json()` and `fromJson()` for a structure. Public
+`@json(structure)` derives `JsonWritable` and `JsonReadable`. Serialize with
+`value.json()` and deserialize with `json::from<T>(bytes)`. Public
 fields are included by default; private fields are omitted. A field decoration
 overrides its JSON name.
 
@@ -63,7 +68,7 @@ void main() {
         stdoutln(encoded[:].cast<stringv>);
     }
 
-    decoded, readError := User::fromJson(encoded[:]);
+    decoded, readError := json::from<User>(encoded[:]);
     if readError == none {
         stdoutln(decoded.displayName);
     }
@@ -157,3 +162,21 @@ only after the dry-run checksum and a clean consumer build have been verified.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## v1 migration status
+
+The behavior supports scalar fields and nested structures, public-field selection,
+explicit field names, private-field omission, and compile-time rejection of
+private annotations and duplicate selected names. `JsonReadable` requires only
+`readJson`; handwritten implementations need no reflection helper. The generated
+reader skips unknown properties and propagates parsing errors.
+
+Owned sequence fields (`own []T`), allocation-failure parity, release packaging,
+and the CI toolchain update remain migration work. The streaming array API
+continues to work independently of owned sequence derivation.
+
+## Stress testing
+
+Run `longbow test . --verbose` for the complete suite, including deterministic
+growth/shrink, recursive, Unicode, grammar-corpus, and malformed-input tests.
+See [test coverage and bounds](docs/testing.md) for details.

@@ -1,0 +1,282 @@
+module json_test;
+
+@imports
+    :: root::json
+    :: lib::std::tests::testing
+    :: lib::std::tests::asserts
+    :: lib::std::text::strings;
+
+@json(structure)
+structure StressDocument {
+    @json("display_name") string name;
+    own []i32 numbers;
+    own []string labels;
+    own []own []i32 matrix;
+    bool active;
+};
+
+@json(structure)
+structure StressNode {
+    string label;
+    own []StressNode children;
+};
+
+@json(structure)
+structure StressBatch {
+    own []StressDocument documents;
+    own []own []own []i32 cube;
+};
+
+@json(structure)
+structure StressNumbers {
+    own []i8 a; own []i16 b; own []i32 c; own []i64 d; own []isize e;
+    own []u8 f; own []u16 g; own []u32 h; own []u64 i; own []usize j;
+    own []f32 k; own []f64 l; own []bool m;
+};
+
+// Every result is checked against the same independently computed formula.
+i32 stressNumber(usize index, usize salt) {
+    return ((index * 97 + salt * 31) % 20001).cast<i32> - 10000;
+}
+
+void verifyStressTree(&testing::UnitTest t, &const StressNode node, usize remaining) {
+    asserts::string_equal(t, node->label.view(), "node", "recursive label survives");
+    if remaining == 0 {
+        asserts::is_true(t, node->children.len() == 0, "leaf has no children");
+        return;
+    }
+    asserts::is_true(t, node->children.len() == 1, "each recursive level has one child");
+    if node->children.len() != 1 { return; }
+    verifyStressTree(t, &node->children[0], remaining - 1);
+}
+
+test elastic_owned_array_growth_boundaries(&testing::UnitTest t) {
+    [21]usize sizes = [0,1,2,3,4,7,8,9,15,16,17,31,32,33,63,64,65,255,256,257,4097];
+    for (usize sample, usize count) = range sizes {
+        source := StressDocument::init();
+        numbers, allocationError := new<own []i32>(count);
+        asserts::is_true(t, allocationError == none, "array allocation succeeds");
+        if allocationError != none { return; }
+        loop usize index = 0; index < count; index++ {
+            numbers[index] = stressNumber(index, sample);
+        }
+        source.numbers = numbers;
+        source.name = "capacity boundary";
+        source.active = true;
+        encoded, writeErr := source.json();
+        asserts::is_true(t, writeErr == none, "elastic array encodes");
+        if writeErr != none { return; }
+        decoded, readErr := json::from<StressDocument>(encoded[:]);
+        asserts::is_true(t, readErr == none, "elastic array decodes");
+        if readErr != none { return; }
+        asserts::is_true(t, decoded.numbers.len() == count, "array length is exact");
+        if decoded.numbers.len() != count { return; }
+        loop usize index = 0; index < count; index++ {
+            asserts::is_true(t, decoded.numbers[index] == stressNumber(index, sample), "every element retains value and order");
+        }
+        asserts::is_true(t, source.numbers.len() == count, "writing does not consume the source owner");
+        asserts::is_true(t, decoded.active, "field following a large array decodes");
+    }
+}
+
+test elastic_replacement_grows_shrinks_and_empties(&testing::UnitTest t) {
+    [12]usize sizes = [1,257,0,4097,3,64,0,65,2,1024,1,0];
+    target := StressDocument::init();
+    for (usize sample, usize count) = range sizes {
+        builder := strings::StringBuilder::init();
+        error err = builder.append("{\"numbers\":[");
+        loop usize index = 0; index < count and err == none; index++ {
+            if index != 0 { err = builder.append(","); }
+            if err == none { err = builder.appendInteger(stressNumber(index, sample)); }
+        }
+        if err == none { err = builder.append("],\"display_name\":\"replacement\",\"active\":true}"); }
+        asserts::is_true(t, err == none, "replacement fixture builds");
+        if err != none { return; }
+        reader := json::Reader::init(builder.view().cast<[]const u8>);
+        err = target.readJson(&reader);
+        if err == none { err = reader.finish(); }
+        asserts::is_true(t, err == none, "existing owner accepts replacement");
+        if err != none { return; }
+        asserts::is_true(t, target.numbers.len() == count, "replacement length never retains stale elements");
+        if target.numbers.len() != count { return; }
+        loop usize index = 0; index < count; index++ {
+            asserts::is_true(t, target.numbers[index] == stressNumber(index, sample), "replacement contents match the current generation");
+        }
+    }
+}
+
+test deeply_recursive_typed_objects_roundtrip(&testing::UnitTest t) {
+    [5]usize depths = [0,1,8,32,64];
+    for (usize sample, usize depth) = range depths {
+        builder := strings::StringBuilder::init();
+        error err = none;
+        loop usize level = 0; level < depth and err == none; level++ {
+            err = builder.append("{\"label\":\"node\",\"children\":[");
+        }
+        if err == none { err = builder.append("{\"label\":\"node\",\"children\":[]}"); }
+        loop usize level = 0; level < depth and err == none; level++ { err = builder.append("]}"); }
+        asserts::is_true(t, err == none, "recursive fixture builds");
+        if err != none { return; }
+        value, readErr := json::from<StressNode>(builder.view().cast<[]const u8>);
+        asserts::is_true(t, readErr == none, "recursive owning structure decodes");
+        if readErr != none { return; }
+        verifyStressTree(t, &value, depth);
+        encoded, writeErr := value.json();
+        asserts::is_true(t, writeErr == none, "recursive owning structure encodes");
+        if writeErr != none { return; }
+        asserts::string_equal(t, encoded[:].cast<stringv>, builder.view(), "recursive document roundtrips exactly");
+    }
+}
+
+test skips_deep_unknown_mixed_containers(&testing::UnitTest t) {
+    [5]usize depths = [1,8,32,64,128];
+    for (usize sample, usize depth) = range depths {
+        builder := strings::StringBuilder::init();
+        error err = builder.append("{\"unknown\":");
+        loop usize level = 0; level < depth and err == none; level++ {
+            if level % 2 == 0 { err = builder.append("{\"x\":["); }
+            else { err = builder.append("["); }
+        }
+        if err == none { err = builder.append("{\"escaped\":\"\\uD83D\\uDE00\",\"values\":[true,false,null,-1.25e3]}"); }
+        usize level = depth;
+        while level > 0 and err == none {
+            level--;
+            if level % 2 == 0 { err = builder.append("]}"); }
+            else { err = builder.append("]"); }
+        }
+        if err == none { err = builder.append(",\"display_name\":\"kept\",\"numbers\":[42],\"active\":true}"); }
+        asserts::is_true(t, err == none, "deep unknown fixture builds");
+        if err != none { return; }
+        value, readErr := json::from<StressDocument>(builder.view().cast<[]const u8>);
+        asserts::is_true(t, readErr == none, "unknown mixed nesting skips successfully");
+        if readErr != none { return; }
+        asserts::string_equal(t, value.name.view(), "kept", "reader resumes after unknown nesting");
+        asserts::is_true(t, value.numbers.len() == 1 and value.numbers[0] == 42 and value.active, "subsequent fields retain correct container state");
+    }
+}
+
+test reads_wide_objects_and_very_long_unknown_keys(&testing::UnitTest t) {
+    builder := strings::StringBuilder::init();
+    error err = builder.append("{\"display_name\":\"first\",");
+    loop usize index = 0; index < 2048 and err == none; index++ {
+        err = builder.append("\"unknown_");
+        if err == none { err = builder.appendInteger(index); }
+        if err == none { err = builder.append("\":[null,{\"a\":[true,\"text\",42]}],"); }
+    }
+    if err == none { err = builder.append("\""); }
+    if err == none { err = builder.appendRepeated('x', 8192); }
+    if err == none { err = builder.append("\":{},\"display\\u005fname\":\"last\",\"active\":true}"); }
+    asserts::is_true(t, err == none, "wide document builds");
+    if err != none { return; }
+    value, readErr := json::from<StressDocument>(builder.view().cast<[]const u8>);
+    asserts::is_true(t, readErr == none, "wide document decodes");
+    if readErr != none { return; }
+    asserts::string_equal(t, value.name.view(), "last", "escaped repeated key wins after thousands of unknown properties");
+    asserts::is_true(t, value.active, "reader reaches the final field");
+}
+
+test roundtrips_long_unicode_and_escaped_strings(&testing::UnitTest t) {
+    builder := strings::StringBuilder::init();
+    error err = none;
+    loop usize index = 0; index < 4096 and err == none; index++ {
+        err = builder.append("a\"\\\n\t\r😀é中");
+    }
+    asserts::is_true(t, err == none, "long string fixture builds");
+    if err != none { return; }
+    value := StressDocument::init();
+    text, textErr := builder.toString();
+    err = textErr;
+    value.name = text;
+    asserts::is_true(t, err == none, "long string owner allocates");
+    if err != none { return; }
+    encoded, writeErr := value.json();
+    asserts::is_true(t, writeErr == none, "large string encodes");
+    if writeErr != none { return; }
+    decoded, readErr := json::from<StressDocument>(encoded[:]);
+    asserts::is_true(t, readErr == none, "large escaped string decodes");
+    if readErr != none { return; }
+    asserts::string_equal(t, decoded.name.view(), builder.view(), "all Unicode and control escapes retain their bytes");
+}
+
+test all_numeric_array_types_and_extreme_values(&testing::UnitTest t) {
+    source := "{\"a\":[-128,0,127],\"b\":[-32768,32767],\"c\":[-2147483648,2147483647],\"d\":[-9223372036854775808,9223372036854775807],\"e\":[-42,42],\"f\":[0,255],\"g\":[0,65535],\"h\":[0,4294967295],\"i\":[0,18446744073709551615],\"j\":[0,42],\"k\":[-1.5,0,2.25],\"l\":[-1.25e100,0,1.25e-100],\"m\":[true,false,true]}";
+    value, err := json::from<StressNumbers>(source.cast<[]const u8>);
+    asserts::is_true(t, err == none, "every numeric and boolean array decodes");
+    if err != none { return; }
+    asserts::is_true(t, value.a.len() == 3 and value.a[0] == -128 and value.a[2] == 127, "i8 boundaries");
+    asserts::is_true(t, value.b[0] == -32768 and value.b[1] == 32767, "i16 boundaries");
+    asserts::is_true(t, value.c[0] == -2147483648 and value.c[1] == 2147483647, "i32 boundaries");
+    asserts::is_true(t, value.d[0] == -9223372036854775808 and value.d[1] == 9223372036854775807, "i64 boundaries");
+    asserts::is_true(t, value.e[0] == -42 and value.f[1] == 255 and value.g[1] == 65535, "native signed and narrow unsigned values");
+    asserts::is_true(t, value.h[1] == 4294967295 and value.i[1] == 18446744073709551615 and value.j[1] == 42, "wide unsigned boundaries");
+    asserts::is_true(t, value.k[0] == (-1.5).cast<f32> and value.k[2] == 2.25.cast<f32> and value.l[0] < -1000000000000.0 and value.l[2] > 0.0 and value.l[2] < 0.000000000001, "floating arrays preserve representative values");
+    asserts::is_true(t, value.m[0] and !value.m[1] and value.m[2], "boolean ordering");
+    encoded, writeErr := value.json();
+    asserts::is_true(t, writeErr == none, "all array overloads encode");
+    if writeErr != none { return; }
+    again, readErr := json::from<StressNumbers>(encoded[:]);
+    asserts::is_true(t, readErr == none, "extreme numeric output is readable");
+    if readErr != none { return; }
+    second, secondErr := again.json();
+    asserts::is_true(t, secondErr == none, "second encoding succeeds");
+    if secondErr != none { return; }
+    asserts::string_equal(t, second[:].cast<stringv>, encoded[:].cast<stringv>, "numeric normalization is stable");
+}
+
+test seeded_mixed_batches_are_stable(&testing::UnitTest t) {
+    u32 state = 1729;
+    loop usize trial = 0; trial < 64; trial++ {
+        state = (state * 25173 + 13849) % 65521;
+        usize count = (state % 17).cast<usize>;
+        batch := StressBatch::init();
+        documents, allocErr := new<own []StressDocument>(count);
+        asserts::is_true(t, allocErr == none, "mixed batch allocates");
+        if allocErr != none { return; }
+        loop usize index = 0; index < count; index++ {
+            state = (state * 25173 + 13849) % 65521;
+            usize length = (state % 67).cast<usize>;
+            numbers, err := new<own []i32>(length);
+            asserts::is_true(t, err == none, "mixed numeric field allocates");
+            if err != none { return; }
+            loop usize item = 0; item < length; item++ { numbers[item] = stressNumber(item, index + trial); }
+            documents[index].numbers = numbers;
+            documents[index].name = "quotes: \" / slash: \\ / unicode: 🧪";
+            documents[index].active = index % 2 == 0;
+        }
+        batch.documents = documents;
+        encoded, writeErr := batch.json();
+        asserts::is_true(t, writeErr == none, "seeded mixed batch encodes");
+        if writeErr != none { return; }
+        decoded, readErr := json::from<StressBatch>(encoded[:]);
+        asserts::is_true(t, readErr == none, "seeded mixed batch decodes");
+        if readErr != none { return; }
+        asserts::is_true(t, decoded.documents.len() == count, "batch cardinality survives");
+        if decoded.documents.len() != count { return; }
+        loop usize index = 0; index < count; index++ {
+            asserts::string_equal(t, decoded.documents[index].name.view(), batch.documents[index].name.view(), "mixed text survives");
+            asserts::is_true(t, decoded.documents[index].active == (index % 2 == 0), "mixed booleans survive");
+            usize length = batch.documents[index].numbers.len();
+            asserts::is_true(t, decoded.documents[index].numbers.len() == length, "ragged cardinality survives");
+            if decoded.documents[index].numbers.len() != length { return; }
+            loop usize item = 0; item < length; item++ {
+                asserts::is_true(t, decoded.documents[index].numbers[item] == stressNumber(item, index + trial), "seeded nested values match their independent formula");
+            }
+        }
+        normalized, normalizedErr := decoded.json();
+        asserts::is_true(t, normalizedErr == none, "seeded document re-encodes");
+        if normalizedErr != none { return; }
+        asserts::string_equal(t, normalized[:].cast<stringv>, encoded[:].cast<stringv>, "seeded document encoding is stable");
+    }
+}
+
+test ragged_three_dimensional_arrays_preserve_shape(&testing::UnitTest t) {
+    source := "{\"documents\":[{\"display_name\":\"nested\",\"numbers\":[1],\"labels\":[\"x\",\"\"],\"matrix\":[[],[2,3]],\"active\":true}],\"cube\":[[],[[],[1,2]],[[3],[],[4,5,6]],[]]}";
+    value, err := json::from<StressBatch>(source.cast<[]const u8>);
+    asserts::is_true(t, err == none, "three owning layers decode");
+    if err != none { return; }
+    asserts::is_true(t, value.cube.len() == 4 and value.cube[0].len() == 0 and value.cube[2].len() == 3 and value.cube[2][2][2] == 6, "ragged cube values and empty branches survive");
+    encoded, writeErr := value.json();
+    asserts::is_true(t, writeErr == none, "three owning layers encode");
+    if writeErr != none { return; }
+    asserts::string_equal(t, encoded[:].cast<stringv>, source, "ragged mixed structure roundtrips exactly");
+}

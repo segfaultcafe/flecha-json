@@ -1,0 +1,61 @@
+module json;
+
+@imports :: lib::std::containers::collections as coll;
+
+error writeArray<E>(&Writer writer, []const E values) {
+    err := writer->beginArray();
+    if err != none { return err; }
+    loop usize index = 0; index < values.len(); index++ {
+        if E.isof<own []Inner> {
+            err = writeArray<Inner>(writer, values[index][:]);
+        } else if E.isof<JsonWritable> {
+            err = values[index].writeJson(writer);
+        } else {
+            err = writer->write(values[index]);
+        }
+        if err != none { return err; }
+    }
+    return writer->endArray();
+}
+
+(V, error) readValue<V>(&Reader reader) {
+    if V.isof<string> {
+        return reader->readString();
+    } else if V.isof<own []E> {
+        return readArray<E>(reader);
+    } else {
+        V value = none;
+        error err = none;
+        if V.isof<JsonReadable> {
+            err = value.readJson(reader);
+        } else {
+            err = reader->read(&value);
+        }
+        return (value, err);
+    }
+}
+
+(own []E, error) readArray<E>(&Reader reader) {
+    err := reader->beginArray();
+    if err != none { return (none, err); }
+    values := coll::Array<E>::init();
+    more, nextErr := reader->nextArrayElement();
+    while more and nextErr == none {
+        value, readErr := readValue<E>(reader);
+        if readErr != none { return (none, readErr); }
+        err = values.push(value);
+        if err != none { return (none, err); }
+        more, nextErr = reader->nextArrayElement();
+    }
+    if nextErr != none { return (none, nextErr); }
+    output, allocationError := new<own []E>(values.len());
+    if allocationError != none { return (none, allocationError); }
+    usize index = output.len();
+    while index > 0 {
+        index--;
+        value, popError := values.pop();
+        if popError != none { return (none, popError); }
+        output[index] = value;
+    }
+    return (output, none);
+}

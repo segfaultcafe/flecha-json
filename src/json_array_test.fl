@@ -1,0 +1,71 @@
+module json_test;
+@imports
+    :: root::json
+    :: lib::std::tests::testing
+    :: lib::std::tests::asserts;
+
+@json(structure)
+structure OwnedArrays {
+    own []i32 numbers;
+    own []string names;
+    own []Child children;
+    own []own []i32 matrix;
+};
+
+@json(structure)
+structure OwnedTree { own []OwnedArrays groups; };
+
+test roundtrips_owned_arrays(&testing::UnitTest t) {
+    source := "{\"numbers\":[42,-7,0],\"names\":[\"Ada\",\"Grace\"],\"children\":[{\"title\":\"nested\"}],\"matrix\":[[1,2],[],[3]]}";
+    value, err := json::from<OwnedArrays>(source.cast<[]const u8>);
+    asserts::is_true(t, err == none, "owned arrays decode");
+    if err != none { return; }
+    asserts::is_true(t, value.numbers.len() == 3 and value.numbers[1] == -7, "numeric elements retain order");
+    asserts::string_equal(t, value.names[1].view(), "Grace", "owned strings decode");
+    asserts::string_equal(t, value.children[0].title.view(), "nested", "structure elements decode");
+    asserts::is_true(t, value.matrix.len() == 3 and value.matrix[1].len() == 0 and value.matrix[2][0] == 3, "nested owners retain shape");
+    encoded, writeErr := value.json();
+    asserts::is_true(t, writeErr == none, "owned arrays encode without consuming the owner");
+    asserts::string_equal(t, encoded[:].cast<stringv>, source, "array encoding roundtrips");
+    asserts::string_equal(t, value.names[0].view(), "Ada", "serialization preserves the source owner");
+}
+
+test replaces_owned_arrays_and_accepts_empty_arrays(&testing::UnitTest t) {
+    value, err := json::from<OwnedArrays>("{\"names\":[\"old\"],\"names\":[\"new\",\"last\"],\"numbers\":[1],\"numbers\":[],\"children\":[],\"matrix\":[]}".cast<[]const u8>);
+    asserts::is_true(t, err == none, "repeated owning fields decode");
+    if err != none { return; }
+    asserts::is_true(t, value.numbers.len() == 0 and value.children.len() == 0 and value.matrix.len() == 0, "empty slices replace old contents");
+    asserts::is_true(t, value.names.len() == 2, "last array replaces the previous owner");
+    asserts::string_equal(t, value.names[0].view(), "new", "last repeated value wins");
+}
+
+test preserves_owned_field_on_partial_array_failure(&testing::UnitTest t) {
+    value, initialErr := json::from<OwnedArrays>("{\"names\":[\"kept\"]}".cast<[]const u8>);
+    asserts::is_true(t, initialErr == none, "initial owner decodes");
+    reader := json::Reader::init("{\"names\":[\"temporary\",42]}".cast<[]const u8>);
+    err := value.readJson(&reader);
+    asserts::is_true(t, err == json::JsonError.TypeMismatch, "element failure propagates");
+    asserts::is_true(t, value.names.len() == 1, "failed replacement preserves the old owner");
+    asserts::string_equal(t, value.names[0].view(), "kept", "partial temporary array does not replace the field");
+}
+
+test rejects_invalid_owned_arrays(&testing::UnitTest t) {
+    wrong, wrongErr := json::from<OwnedArrays>("{\"numbers\":true}".cast<[]const u8>);
+    asserts::is_true(t, wrongErr == json::JsonError.TypeMismatch, "array shape is required");
+    malformed, malformedErr := json::from<OwnedArrays>("{\"names\":[\"temporary\",]}".cast<[]const u8>);
+    asserts::is_true(t, malformedErr != none, "trailing array comma is rejected");
+    nested, nestedErr := json::from<OwnedArrays>("{\"matrix\":[[1,2],[3,false]]}".cast<[]const u8>);
+    asserts::is_true(t, nestedErr == json::JsonError.TypeMismatch, "partial nested owner fails safely");
+    truncated, truncatedErr := json::from<OwnedArrays>("{\"children\":[{\"title\":\"temporary\"},{\"title\":".cast<[]const u8>);
+    asserts::is_true(t, truncatedErr != none, "partial structure element fails safely");
+}
+
+test composes_owned_arrays_recursively(&testing::UnitTest t) {
+    source := "{\"groups\":[{\"numbers\":[1],\"names\":[\"Ada\"],\"children\":[{\"title\":\"leaf\"}],\"matrix\":[[2]]}]}";
+    value, err := json::from<OwnedTree>(source.cast<[]const u8>);
+    asserts::is_true(t, err == none, "structures with owned fields decode as array elements");
+    if err != none { return; }
+    encoded, writeErr := value.json();
+    asserts::is_true(t, writeErr == none, "recursive owned structure encoding succeeds");
+    asserts::string_equal(t, encoded[:].cast<stringv>, source, "nested ownership roundtrips");
+}
