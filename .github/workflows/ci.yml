@@ -29,6 +29,12 @@ jobs:
           ref: ${{ env.FLECHA_COMMIT }}
           path: toolchain-src
 
+      - name: Install toolchain build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-14 g++-14 llvm-18-dev libcurl4-openssl-dev ninja-build
+
       - name: Build Flecha 0.4 toolchain
         shell: bash
         run: |
@@ -36,7 +42,10 @@ jobs:
           install_root="$RUNNER_TEMP/flecha"
           cmake -S toolchain-src -B toolchain-build -G Ninja \
             -DBUILD_TESTING=OFF \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/bin/gcc-14 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/g++-14 \
+            "-DLLVM_DIR=$(/usr/bin/llvm-config-18 --cmakedir)"
           cmake --build toolchain-build \
             --target flecha longbow flecha-lsp \
             --parallel 2
