@@ -1,0 +1,102 @@
+module json;
+
+behavior json<T> => structure << JsonWritable, JsonReadable {
+    error T::writeJson(&const self, &Writer writer) override {
+        err := writer->beginObject();
+        if err != none {
+            return err;
+        }
+
+        for<F> Field<T, F> field = T::fields() {
+            field::require(!field::isPrivate() or !field::decorated(), "private fields cannot be decorated with json");
+            if !field::isPrivate() and (T::decorated() or field::decorated()) {
+                stringv name = field::name();
+                if field::decorated() {
+                    field::requireUnique(field::decorator().name);
+                    name = field::decorator().name;
+                } else {
+                    field::requireUnique(field::name());
+                }
+
+                err = writer->key(name);
+                if err != none {
+                    return err;
+                }
+
+                if F.isof<own []E> {
+                    err = writeArray<E>(writer, field::get(self)[:]);
+                } else if F.isof<JsonWritable> {
+                    err = field::get(self).writeJson(writer);
+                } else {
+                    err = writer->write(field::get(self));
+                }
+                if err != none {
+                    return err;
+                }
+            }
+        }
+
+        return writer->endObject();
+    }
+
+    error T::readJson(&self, &Reader reader) override {
+        for<F> Field<T, F> field = T::fields() {
+            field::require(!field::isPrivate() or !field::decorated(), "private fields cannot be decorated with json");
+            if !field::isPrivate() and (T::decorated() or field::decorated()) {
+                if field::decorated() {
+                    field::requireUnique(field::decorator().name);
+                } else {
+                    field::requireUnique(field::name());
+                }
+            }
+        }
+
+        err := reader->beginObject();
+        if err != none {
+            return err;
+        }
+
+        more, nextErr := reader->nextObjectField();
+        while more and nextErr == none {
+            matched := false;
+            for<F> Field<T, F> field = T::fields() {
+                if !field::isPrivate() and (T::decorated() or field::decorated()) {
+                    stringv name = field::name();
+                    if field::decorated() {
+                        name = field::decorator().name;
+                    }
+                    if !reader->keyIs(name) { proceed; }
+                    matched = true;
+                    if F.isof<own []E> {
+                        value, readErr := readArray<E>(reader);
+                        err = readErr;
+                        if err == none { field::get(self) = value; }
+                    } else if F.isof<string> {
+                        value, readErr := reader->readString();
+                        err = readErr;
+                        if err == none {
+                            field::get(self) = value;
+                        }
+                    } else if F.isof<JsonReadable> {
+                        err = field::get(self).readJson(reader);
+                    } else {
+                        err = reader->read(&field::get(self));
+                    }
+                    if err != none {
+                        return err;
+                    }
+                    break;
+                }
+            }
+
+            if !matched {
+                err = reader->skipValue();
+            } also err != none {
+                return err;
+            }
+            more, nextErr = reader->nextObjectField();
+        }
+
+        return nextErr;
+    }
+};

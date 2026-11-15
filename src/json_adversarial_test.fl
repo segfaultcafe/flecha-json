@@ -1,0 +1,162 @@
+module json_test;
+@imports
+    :: root::json
+    :: lib::std::tests::testing
+    :: lib::std::tests::asserts
+    :: lib::std::text::strings;
+
+test rejects_every_truncated_prefix_of_nested_document(&testing::UnitTest t) {
+    source := "{\"display_name\":\"Unicode é🧪 and \\uD83D\\uDE00\",\"numbers\":[1,-2,300],\"labels\":[\"a\",\"escaped\\nline\"],\"matrix\":[[],[1,2],[3]],\"active\":true}";
+    []const u8 bytes = source.cast<[]const u8>;
+    loop usize length = 0; length < bytes.len(); length++ {
+        value, err := json::from<StressDocument>(bytes[:length]);
+        asserts::is_true(t, err != none, "every incomplete object prefix must fail");
+    }
+    value, err := json::from<StressDocument>(bytes);
+    asserts::is_true(t, err == none and value.active, "complete input still succeeds after all truncation attempts");
+}
+
+test rejects_control_and_invalid_utf8_insertions_at_every_offset(&testing::UnitTest t) {
+    source := "{\"display_name\":\"é🧪\",\"numbers\":[-1,2],\"labels\":[\"escaped\\n\"],\"matrix\":[[3]],\"active\":true}";
+    []const u8 bytes = source.cast<[]const u8>;
+    [2]u8 invalidBytes = [0,255];
+    for (usize kind, u8 invalid) = range invalidBytes {
+        loop usize position = 0; position <= bytes.len(); position++ {
+            mutated, allocErr := new<own []u8>(bytes.len() + 1);
+            asserts::is_true(t, allocErr == none, "mutation buffer allocates");
+            if allocErr != none { return; }
+            loop usize index = 0; index < position; index++ { mutated[index] = bytes[index]; }
+            mutated[position] = invalid;
+            loop usize index = position; index < bytes.len(); index++ { mutated[index + 1] = bytes[index]; }
+            value, err := json::from<StressDocument>(mutated[:]);
+            asserts::is_true(t, err != none, "raw NUL and invalid UTF-8 are never legal JSON bytes");
+        }
+    }
+}
+
+test rejects_array_type_and_numeric_boundary_errors(&testing::UnitTest t) {
+    [18]JsonTestCase cases = [
+        JsonTestCase::init("{\"a\":[-129]}"), JsonTestCase::init("{\"a\":[128]}"), JsonTestCase::init("{\"b\":[32768]}"),
+        JsonTestCase::init("{\"c\":[2147483648]}"), JsonTestCase::init("{\"d\":[9223372036854775808]}"),
+        JsonTestCase::init("{\"d\":[-9223372036854775809]}"), JsonTestCase::init("{\"f\":[-1]}"), JsonTestCase::init("{\"f\":[256]}"),
+        JsonTestCase::init("{\"g\":[65536]}"), JsonTestCase::init("{\"h\":[4294967296]}"), JsonTestCase::init("{\"i\":[18446744073709551616]}"),
+        JsonTestCase::init("{\"a\":[1.5]}"), JsonTestCase::init("{\"m\":[1]}"), JsonTestCase::init("{\"m\":[\"true\"]}"),
+        JsonTestCase::init("{\"k\":[1e100]}"), JsonTestCase::init("{\"l\":[1e400]}"), JsonTestCase::init("{\"c\":[null]}"), JsonTestCase::init("{\"c\":{}}")
+    ];
+    loop usize index = 0; index < cases.len(); index++ {
+        stringv source = cases[index].source.view();
+        value, err := json::from<StressNumbers>(source.cast<[]const u8>);
+        asserts::is_true(t, err != none, source);
+    }
+}
+
+test rejects_null_for_nonnullable_owned_fields(&testing::UnitTest t) {
+    [7]JsonTestCase cases = [
+        JsonTestCase::init("{\"numbers\":null}"), JsonTestCase::init("{\"labels\":null}"), JsonTestCase::init("{\"labels\":[null]}"),
+        JsonTestCase::init("{\"matrix\":[null]}"), JsonTestCase::init("{\"matrix\":[[null]]}"),
+        JsonTestCase::init("{\"display_name\":null}"), JsonTestCase::init("{\"active\":null}")
+    ];
+    loop usize index = 0; index < cases.len(); index++ {
+        stringv source = cases[index].source.view();
+        value, err := json::from<StressDocument>(source.cast<[]const u8>);
+        asserts::is_true(t, err == json::JsonError.TypeMismatch, source);
+    }
+}
+
+test repeated_escaped_keys_replace_complete_owners(&testing::UnitTest t) {
+    source := "{\"display_name\":\"first\",\"display\\u005fname\":\"last\",\"numbers\":[1,2,3],\"num\\u0062ers\":[9],\"labels\":[\"old\"],\"labels\":[],\"matrix\":[[1]],\"matrix\":[[],[2,3]],\"active\":false,\"active\":true}";
+    value, err := json::from<StressDocument>(source.cast<[]const u8>);
+    asserts::is_true(t, err == none, "escaped duplicate fields decode");
+    if err != none { return; }
+    asserts::string_equal(t, value.name.view(), "last", "decoded property names determine repetition");
+    asserts::is_true(t, value.numbers.len() == 1 and value.numbers[0] == 9, "numeric owner is replaced");
+    asserts::is_true(t, value.labels.len() == 0 and value.matrix.len() == 2 and value.matrix[1][1] == 3 and value.active, "nested, empty and scalar replacements agree");
+}
+
+test partial_array_failures_preserve_previous_owner_at_growth_boundaries(&testing::UnitTest t) {
+    [8]usize prefixes = [0,1,4,8,16,32,64,257];
+    for (usize sample, usize count) = range prefixes {
+        value, initialErr := json::from<StressDocument>("{\"numbers\":[41,42]}".cast<[]const u8>);
+        asserts::is_true(t, initialErr == none, "previous owner initializes");
+        if initialErr != none { return; }
+        builder := strings::StringBuilder::init();
+        error err = builder.append("{\"numbers\":[");
+        loop usize index = 0; index < count and err == none; index++ { err = builder.append("1,"); }
+        if err == none { err = builder.append("false]}"); }
+        asserts::is_true(t, err == none, "partial-failure fixture builds");
+        if err != none { return; }
+        reader := json::Reader::init(builder.view().cast<[]const u8>);
+        err = value.readJson(&reader);
+        asserts::is_true(t, err == json::JsonError.TypeMismatch, "element failure propagates at every growth boundary");
+        asserts::is_true(t, value.numbers.len() == 2 and value.numbers[0] == 41 and value.numbers[1] == 42, "partial temporary storage never replaces the previous owner");
+    }
+}
+
+test decoding_owns_strings_after_input_buffer_is_replaced(&testing::UnitTest t) {
+    value := StressDocument::init();
+    {
+        builder := strings::StringBuilder::init();
+        err := builder.append("{\"display_name\":\"owned 🧪\",\"labels\":[\"plain\",\"escaped\\nvalue\"]}");
+        asserts::is_true(t, err == none, "temporary source builds");
+        if err != none { return; }
+        value, err = json::from<StressDocument>(builder.view().cast<[]const u8>);
+        asserts::is_true(t, err == none, "temporary source decodes");
+        if err != none { return; }
+        err = builder.appendRepeated('x', 32768);
+        asserts::is_true(t, err == none, "input buffer grows after decoding");
+    }
+    asserts::string_equal(t, value.name.view(), "owned 🧪", "decoded field outlives source storage");
+    asserts::is_true(t, value.labels.len() == 2, "decoded array outlives source storage");
+    if value.labels.len() != 2 { return; }
+    asserts::string_equal(t, value.labels[1].view(), "escaped\nvalue", "decoded owned elements outlive the source");
+}
+
+test malformed_unknown_values_are_not_silently_ignored(&testing::UnitTest t) {
+    [6]JsonTestCase cases = [
+        JsonTestCase::init("{\"unknown\":{\"nested\":[1,2,]}}"),
+        JsonTestCase::init("{\"unknown\":{\"nested\":\"\\uD800\"}}"),
+        JsonTestCase::init("{\"unknown\":[true,null,{\"bad\":01}]}"),
+        JsonTestCase::init("{\"unknown\":[[[[[false]]]]}"),
+        JsonTestCase::init("{\"unknown\":{\"a\":true,}}"),
+        JsonTestCase::init("{\"unknown\":{\"nested\":\"\\x41\"}}")
+    ];
+    loop usize index = 0; index < cases.len(); index++ {
+        stringv source = cases[index].source.view();
+        value, err := json::from<StressDocument>(source.cast<[]const u8>);
+        asserts::is_true(t, err != none, source);
+    }
+}
+
+test missing_fields_zero_initialize_new_values(&testing::UnitTest t) {
+    value, err := json::from<StressDocument>("{}".cast<[]const u8>);
+    asserts::is_true(t, err == none, "empty object is valid");
+    if err != none { return; }
+    asserts::is_true(t, value.numbers.len() == 0 and value.labels.len() == 0 and value.matrix.len() == 0 and !value.active, "missing owners and scalars are zero initialized");
+    asserts::string_equal(t, value.name.view(), "", "missing string is empty");
+}
+
+test deep_recursive_failure_preserves_previous_children(&testing::UnitTest t) {
+    [4]usize depths = [1,8,32,64];
+    for (usize sample, usize depth) = range depths {
+        value, initialErr := json::from<StressNode>("{\"label\":\"root\",\"children\":[{\"label\":\"original\",\"children\":[]}]}".cast<[]const u8>);
+        asserts::is_true(t, initialErr == none, "previous recursive owner initializes");
+        if initialErr != none { return; }
+        builder := strings::StringBuilder::init();
+        error err = builder.append("{\"children\":[");
+        loop usize level = 0; level < depth and err == none; level++ {
+            err = builder.append("{\"label\":\"temporary\",\"children\":[");
+        }
+        if err == none { err = builder.append("{\"label\":false,\"children\":[]}"); }
+        loop usize level = 0; level < depth and err == none; level++ { err = builder.append("]}"); }
+        if err == none { err = builder.append("]}"); }
+        asserts::is_true(t, err == none, "recursive failure fixture builds");
+        if err != none { return; }
+        reader := json::Reader::init(builder.view().cast<[]const u8>);
+        err = value.readJson(&reader);
+        asserts::is_true(t, err == json::JsonError.TypeMismatch, "deep leaf error propagates through every owner");
+        asserts::is_true(t, value.children.len() == 1, "failed recursive replacement preserves the previous child");
+        if value.children.len() != 1 { return; }
+        asserts::string_equal(t, value.children[0].label.view(), "original", "temporary recursive values never replace the old tree");
+        asserts::is_true(t, value.children[0].children.len() == 0, "old child remains a leaf");
+    }
+}

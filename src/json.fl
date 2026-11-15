@@ -5,11 +5,22 @@ module json;
     :: lib::std::text::strings;
 
 /*
-    Flecha 0.3.x compiler-known decoration. Generated code depends on the
-    exported Writer and Reader protocol, so those public APIs must change only
-    with a coordinated compiler update.
+    Typed JSON metadata. Serialization is implemented by the library behavior
+    in json_behavior.fl and uses the streaming Writer protocol.
 */
-export decoration json;
+export decoration json {
+    application(structure) target structure;
+    application(stringv name) target structure::field;
+};
+
+export interface JsonWritable {
+    error writeJson(&const self, &Writer writer) virtual;
+    (own []u8, error) json(&const self) default;
+};
+
+export interface JsonReadable {
+    error readJson(&self, &Reader reader) virtual;
+};
 
 export error JsonError {
     InvalidState,

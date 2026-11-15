@@ -2,28 +2,30 @@
 
 `flecha/json` is the JSON library for Flecha. It provides:
 
-- compiler-integrated `@json` serialization and deserialization for structures;
+- library-defined `@json` behaviors for structure serialization and deserialization;
 - a streaming writer for objects, arrays, strings, numbers, booleans, and null;
 - a streaming reader with nested traversal, unknown-value skipping, and strict
   JSON validation; and
 - UTF-8 validation, JSON string escaping, Unicode escape decoding, and checked
   numeric conversion.
 
-Version `0.1.2` requires Flecha and Longbow `>=0.3.0, <0.4.0`.
+Version `0.2.0` requires Flecha `>=0.4.0, <0.5.0`, including support for
+reflection inside runtime loops, managed interface returns, and owned-slice
+type patterns.
 
 ## Install
 
-Add the immutable public package with Longbow 0.3:
+Add the immutable public package with Longbow 0.4:
 
 ```sh
-longbow add flecha/json@^0.1 --as json
+longbow add flecha/json@^0.2 --as json
 ```
 
 Or declare it directly:
 
 ```toml
 [dependencies]
-json = { package = "flecha/json", version = "^0.1" }
+json = { package = "flecha/json", version = "^0.2" }
 ```
 
 The dependency alias (`json` above) controls the import path:
@@ -35,7 +37,8 @@ The dependency alias (`json` above) controls the import path:
 
 ## Decorated structures
 
-`@json(structure)` generates `json()` and `fromJson()` for a structure. Public
+`@json(structure)` derives `JsonWritable` and `JsonReadable`. Serialize with
+`value.json()` and deserialize with `json::from<T>(bytes)`. Public
 fields are included by default; private fields are omitted. A field decoration
 overrides its JSON name.
 
@@ -63,7 +66,7 @@ void main() {
         stdoutln(encoded[:].cast<stringv>);
     }
 
-    decoded, readError := User::fromJson(encoded[:]);
+    decoded, readError := json::from<User>(encoded[:]);
     if readError == none {
         stdoutln(decoded.displayName);
     }
@@ -141,7 +144,7 @@ Allocation and UTF-8 errors from the standard library may also be returned.
 
 ## Development
 
-Use the Flecha 0.3 toolchain to validate the package:
+Use the Flecha 0.4 toolchain to validate the package:
 
 ```sh
 longbow check
@@ -151,9 +154,28 @@ git diff --check
 ```
 
 The source archive produced by `publish --dry-run` is deterministic. Published
-`owner/package/version` tuples are immutable, so release `0.1.2` is published
+`owner/package/version` tuples are immutable, so release `0.2.0` is published
 only after the dry-run checksum and a clean consumer build have been verified.
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## 0.2 status
+
+The behavior supports scalar fields and nested structures, public-field selection,
+explicit field names, private-field omission, and compile-time rejection of
+private annotations and duplicate selected names. `JsonReadable` requires only
+`readJson`; handwritten implementations need no reflection helper. The generated
+reader skips unknown properties and propagates parsing errors.
+
+Owned sequence fields (`own []T`) compose recursively with scalars, strings,
+and derived structures. Failed sequence decoding preserves the previous owner.
+The streaming array API continues to work independently of owned sequence
+derivation.
+
+## Stress testing
+
+Run `longbow test . --verbose` for the complete suite, including deterministic
+growth/shrink, recursive, Unicode, grammar-corpus, and malformed-input tests.
+See [test coverage and bounds](docs/testing.md) for details.

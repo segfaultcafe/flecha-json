@@ -1,0 +1,154 @@
+module json_test;
+@imports
+    :: root::json
+    :: lib::std::tests::testing
+    :: lib::std::tests::asserts;
+
+// Keep corpus entries in fixed arrays of owning structures.
+structure JsonTestCase { string source; };
+JsonTestCase JsonTestCase::init(stringv source) override {
+    return build JsonTestCase { self.source = source; };
+}
+
+// Fixed grammar corpus: independent input fixtures, not Writer-generated JSON.
+test accepts_complex_json_grammar_corpus(&testing::UnitTest t) {
+    [30]JsonTestCase cases = [
+        JsonTestCase::init("null"),
+        JsonTestCase::init("true"),
+        JsonTestCase::init("false"),
+        JsonTestCase::init("0"),
+        JsonTestCase::init("-0"),
+        JsonTestCase::init("1"),
+        JsonTestCase::init("-1"),
+        JsonTestCase::init("1.25"),
+        JsonTestCase::init("-1.25e+12"),
+        JsonTestCase::init("1e-10000"),
+        JsonTestCase::init("1e10000"),
+        JsonTestCase::init("18446744073709551616"),
+        JsonTestCase::init("\"\""),
+        JsonTestCase::init("\"ascii\""),
+        JsonTestCase::init("\"\\\"\\\\\\/\\b\\f\\n\\r\\t\""),
+        JsonTestCase::init("\"\\u0000\\u001f\""),
+        JsonTestCase::init("\"\\uD83D\\uDE00\""),
+        JsonTestCase::init("\"é中🧪\""),
+        JsonTestCase::init("[]"),
+        JsonTestCase::init("{}"),
+        JsonTestCase::init("[[],{},null,true,false,0,\"x\"]"),
+        JsonTestCase::init("{\"a\":{\"b\":[{\"c\":[]},[1,2,3]]}}"),
+        JsonTestCase::init("{\"a\":1,\"a\":2,\"\\u0061\":3}"),
+        JsonTestCase::init("{\"\":0,\"a/b~c\":1,\"space key\":2,\"emoji 🧪\":3}"),
+        JsonTestCase::init(" \t\r\n { \" spaced \" : [ 1 , 2 , { \"end\" : null } ] } \r\n"),
+        JsonTestCase::init("[[[[[[[[[0]]]]]]]]]"),
+        JsonTestCase::init("{\"arr\":[-0,0.0,1e+2,1E-2,1.234567890123456789]}"),
+        JsonTestCase::init("{\"text\":\"\\u0061\\u0301\",\"empty\":{},\"array\":[[],[[]]]}"),
+        JsonTestCase::init("{\"text\":\"braces } ] { [ , : and \\\"quotes\\\"\"}"),
+        JsonTestCase::init("{\"strings\":[\"a\",\"aa\",\"aaa\",\"\\u0000\",\"\\uD834\\uDD1E\"]}")
+    ];
+    loop usize index = 0; index < cases.len(); index++ {
+        stringv source = cases[index].source.view();
+        reader := json::Reader::init(source.cast<[]const u8>);
+        err := reader.skipValue();
+        if err == none { err = reader.finish(); }
+        asserts::is_true(t, err == none, source);
+        writer := json::Writer::init();
+        rawErr := writer.writeRaw(source.cast<[]const u8>);
+        asserts::is_true(t, rawErr == none, source);
+        if rawErr != none { proceed; }
+        encoded, finishErr := writer.finish();
+        asserts::is_true(t, finishErr == none, source);
+        if finishErr == none {
+            check := json::Reader::init(encoded[:]);
+            checkErr := check.skipValue();
+            if checkErr == none { checkErr = check.finish(); }
+            asserts::is_true(t, checkErr == none, source);
+        }
+    }
+}
+
+test rejects_malformed_json_grammar_corpus(&testing::UnitTest t) {
+    [73]JsonTestCase cases = [
+        JsonTestCase::init(""),
+        JsonTestCase::init(" "),
+        JsonTestCase::init("{"),
+        JsonTestCase::init("["),
+        JsonTestCase::init("\""),
+        JsonTestCase::init("tru"),
+        JsonTestCase::init("fals"),
+        JsonTestCase::init("nul"),
+        JsonTestCase::init("True"),
+        JsonTestCase::init("False"),
+        JsonTestCase::init("NULL"),
+        JsonTestCase::init("undefined"),
+        JsonTestCase::init("NaN"),
+        JsonTestCase::init("Infinity"),
+        JsonTestCase::init("-Infinity"),
+        JsonTestCase::init("+1"),
+        JsonTestCase::init("01"),
+        JsonTestCase::init("-01"),
+        JsonTestCase::init(".1"),
+        JsonTestCase::init("1."),
+        JsonTestCase::init("1e"),
+        JsonTestCase::init("1e+"),
+        JsonTestCase::init("1e-"),
+        JsonTestCase::init("--1"),
+        JsonTestCase::init("0x1"),
+        JsonTestCase::init("1_000"),
+        JsonTestCase::init("1 2"),
+        JsonTestCase::init("true false"),
+        JsonTestCase::init("{}{}"),
+        JsonTestCase::init("[]null"),
+        JsonTestCase::init("nullx"),
+        JsonTestCase::init("[1,]"),
+        JsonTestCase::init("[,1]"),
+        JsonTestCase::init("[1,,2]"),
+        JsonTestCase::init("[1 2]"),
+        JsonTestCase::init("[truefalse]"),
+        JsonTestCase::init("[null,undefined]"),
+        JsonTestCase::init("{\"a\":}"),
+        JsonTestCase::init("{\"a\" 1}"),
+        JsonTestCase::init("{a:1}"),
+        JsonTestCase::init("{'a':1}"),
+        JsonTestCase::init("{\"a\":1,}"),
+        JsonTestCase::init("{,\"a\":1}"),
+        JsonTestCase::init("{\"a\":1 \"b\":2}"),
+        JsonTestCase::init("{\"a\":1,,\"b\":2}"),
+        JsonTestCase::init("{\"a\":[1,2}}"),
+        JsonTestCase::init("{\"a\":{\"b\":1]}}"),
+        JsonTestCase::init("// comment\n{}"),
+        JsonTestCase::init("/* comment */{}"),
+        JsonTestCase::init("[1/*x*/,2]"),
+        JsonTestCase::init("{\"a\":1}//tail"),
+        JsonTestCase::init("[1;2]"),
+        JsonTestCase::init("{\"a\"=1}"),
+        JsonTestCase::init("\"\\x20\""),
+        JsonTestCase::init("\"\\v\""),
+        JsonTestCase::init("\"\\q\""),
+        JsonTestCase::init("\"\\u\""),
+        JsonTestCase::init("\"\\u12\""),
+        JsonTestCase::init("\"\\uZZZZ\""),
+        JsonTestCase::init("\"\\uD800\""),
+        JsonTestCase::init("\"\\uDC00\""),
+        JsonTestCase::init("\"\\uD800x\""),
+        JsonTestCase::init("\"\\uD800\\u0041\""),
+        JsonTestCase::init("\"\\uDC00\\uD800\""),
+        JsonTestCase::init("\"line\nbreak\""),
+        JsonTestCase::init("\"tab\tinside\""),
+        JsonTestCase::init("\"unterminated"),
+        JsonTestCase::init("{\"bad\\q\":0}"),
+        JsonTestCase::init("{\"\\uD800\":0}"),
+        JsonTestCase::init("{\"ignored\":[{\"x\":\"\\uDC00\"}]}"),
+        JsonTestCase::init("{\"a\":[0,1,2,3,4,5,6,7,8,]}"),
+        JsonTestCase::init("[[[[[1]]]]"),
+        JsonTestCase::init("{\"a\":{\"b\":{\"c\":true}}")
+    ];
+    loop usize index = 0; index < cases.len(); index++ {
+        stringv source = cases[index].source.view();
+        reader := json::Reader::init(source.cast<[]const u8>);
+        err := reader.skipValue();
+        if err == none { err = reader.finish(); }
+        asserts::is_true(t, err != none, source);
+        writer := json::Writer::init();
+        rawErr := writer.writeRaw(source.cast<[]const u8>);
+        asserts::is_true(t, rawErr != none, source);
+    }
+}
